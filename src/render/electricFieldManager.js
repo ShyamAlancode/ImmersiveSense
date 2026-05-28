@@ -1,8 +1,8 @@
 import * as THREE from "three";
 
-const GOLD = new THREE.Color("#ffd966");
-const CYAN = new THREE.Color("#48c9ff");
-const MINT = new THREE.Color("#7cf7e4");
+const GOLD = new THREE.Color("#ffd966").multiplyScalar(0.72);
+const CYAN = new THREE.Color("#48c9ff").multiplyScalar(0.72);
+const MINT = new THREE.Color("#7cf7e4").multiplyScalar(0.72);
 
 function rounded(value, digits = 2) {
   const factor = 10 ** digits;

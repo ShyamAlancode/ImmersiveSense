@@ -158,8 +158,8 @@ export function createWorld(container) {
 
   function buildLineMaterial(color, opacity = 1.0) {
     const tone = new THREE.Color(color);
-    // Darken slightly so vectors pop against the white canvas
-    tone.multiplyScalar(0.72);
+    // Darken so vectors pop beautifully against the white canvas
+    tone.multiplyScalar(0.42);
     const material = new THREE.MeshBasicMaterial({
       color: tone,
       side: THREE.DoubleSide,
@@ -173,7 +173,7 @@ export function createWorld(container) {
   }
 
   function lineRadius(thickness = 0.08) {
-    return Math.max(0.012, Number(thickness || 0.08) * 0.22);
+    return Math.max(0.012, Number(thickness || 0.08) * 0.45);
   }
 
   function normalizeLineEndpoints(start, end) {

@@ -760,9 +760,11 @@ export function bootstrapApp() {
   }
 
   function buildLinePreviewGuide(color, start, end) {
+    const tone = new THREE.Color(color);
+    tone.multiplyScalar(0.42); // Apply same darkening factor so previews match the final rendered lines!
     const geometry = new THREE.BufferGeometry().setFromPoints([start.clone(), end.clone()]);
     const material = new THREE.LineBasicMaterial({
-      color,
+      color: tone,
       transparent: true,
       opacity: 0.92,
       depthTest: false,

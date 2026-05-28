@@ -153,7 +153,7 @@ export class CalculusSimulationManager {
 
     // Render smooth curve using cylinders chain for visual presence
     const thickness = 0.06;
-    const color = "#7cf7e4";
+    const color = "#108a73";
 
     for (let i = 0; i < points.length - 1; i++) {
       const start = points[i];
@@ -191,7 +191,7 @@ export class CalculusSimulationManager {
 
     const markerGeo = new THREE.SphereGeometry(0.16, 24, 20);
     const markerMat = new THREE.MeshBasicMaterial({
-      color: 0xffd966,
+      color: 0xd19304,
       depthTest: false,
       depthWrite: false
     });
@@ -213,7 +213,7 @@ export class CalculusSimulationManager {
     const end = marker.position.clone().addScaledVector(dir, 1.8);
 
     if (this.world?.buildLineMesh) {
-      const tangentLine = this.world.buildLineMesh(start, end, 0.08, "#ffe38f");
+      const tangentLine = this.world.buildLineMesh(start, end, 0.08, "#d19304");
       this.tangentGroup.add(tangentLine);
     } else {
       const geom = new THREE.BufferGeometry().setFromPoints([start, end]);
@@ -230,7 +230,7 @@ export class CalculusSimulationManager {
     const dx = (b - a) / N;
     const expr = this.functionExpression;
 
-    const barColor = new THREE.Color("#48c9ff");
+    const barColor = new THREE.Color("#1075a3");
 
     for (let i = 0; i < N; i++) {
       const xStart = a + i * dx;
@@ -262,7 +262,7 @@ export class CalculusSimulationManager {
         new THREE.Vector3(xStart, h, 0.08),
         new THREE.Vector3(xStart + dx, h, 0.08)
       ]);
-      const edgeMat = new THREE.LineBasicMaterial({ color: 0x90fff2, transparent: true, opacity: 0.8 });
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x108a73, transparent: true, opacity: 0.8 });
       this.riemannGroup.add(new THREE.Line(edgeGeom, edgeMat));
     }
   }
@@ -276,7 +276,7 @@ export class CalculusSimulationManager {
     // 1. Target limit point marker
     const targetGeo = new THREE.SphereGeometry(0.18, 24, 20);
     const targetMat = new THREE.MeshBasicMaterial({
-      color: 0xff7ca8,
+      color: 0xc22b5e,
       depthTest: false,
       depthWrite: false
     });
@@ -293,16 +293,16 @@ export class CalculusSimulationManager {
     const yR = evalFunction(this.functionExpression, xR);
 
     const approxGeo = new THREE.SphereGeometry(0.12, 16, 12);
-    const leftMarker = new THREE.Mesh(approxGeo, new THREE.MeshBasicMaterial({ color: 0x48c9ff }));
+    const leftMarker = new THREE.Mesh(approxGeo, new THREE.MeshBasicMaterial({ color: 0x1075a3 }));
     leftMarker.position.set(xL, yL, 0);
-    const rightMarker = new THREE.Mesh(approxGeo, new THREE.MeshBasicMaterial({ color: 0x7cf7e4 }));
+    const rightMarker = new THREE.Mesh(approxGeo, new THREE.MeshBasicMaterial({ color: 0x108a73 }));
     rightMarker.position.set(xR, yR, 0);
     this.limitGroup.add(leftMarker, rightMarker);
 
     // 3. Draw dashed vertical projection lines to axes
     if (this.world?.buildLineMesh) {
-      const leftProject = this.world.buildLineMesh(new THREE.Vector3(xL, 0, 0), new THREE.Vector3(xL, yL, 0), 0.02, "#48c9ff");
-      const rightProject = this.world.buildLineMesh(new THREE.Vector3(xR, 0, 0), new THREE.Vector3(xR, yR, 0), 0.02, "#7cf7e4");
+      const leftProject = this.world.buildLineMesh(new THREE.Vector3(xL, 0, 0), new THREE.Vector3(xL, yL, 0), 0.02, "#1075a3");
+      const rightProject = this.world.buildLineMesh(new THREE.Vector3(xR, 0, 0), new THREE.Vector3(xR, yR, 0), 0.02, "#108a73");
       this.limitGroup.add(leftProject, rightProject);
     }
   }

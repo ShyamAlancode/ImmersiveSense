@@ -118,6 +118,8 @@ function buildMaterial(color, opacity = 1) {
 
 function buildLineMaterial(color, opacity = 0.82) {
   const tone = new THREE.Color(color);
+  // Darken line colors so they pop against the white canvas
+  tone.multiplyScalar(0.42);
   return applyMaterialOpacity(new THREE.MeshBasicMaterial({
     color: tone,
     side: THREE.DoubleSide,
@@ -135,15 +137,18 @@ function buildPointMarkerMaterial(color, opacity = 1) {
 }
 
 function lineRadius(thickness = 0.08) {
-  return Math.max(0.012, Number(thickness || 0.08) * 0.22);
+  return Math.max(0.012, Number(thickness || 0.08) * 0.45);
 }
 
 function applyLineMaterialStyle(mesh, opacity = 0.78, color = null) {
   if (!mesh) return;
   const tone = new THREE.Color(color || mesh.material?.color?.getHex?.() || "#dfefff");
+  // Darken line colors so they pop against the white canvas
+  tone.multiplyScalar(0.42);
   if (!(mesh.material instanceof THREE.MeshBasicMaterial)) {
     mesh.material?.dispose?.();
-    mesh.material = buildLineMaterial(tone, opacity);
+    const rawColor = color || mesh.material?.color?.getHex?.() || "#dfefff";
+    mesh.material = buildLineMaterial(rawColor, opacity);
   } else {
     mesh.material.color.copy(tone);
     applyMaterialOpacity(mesh.material, opacity, true);

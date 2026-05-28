@@ -175,6 +175,7 @@ export class AnalyticOverlayManager {
     const length = Math.max(0.001, delta.length());
     const direction = delta.normalize();
     const color = new THREE.Color(overlay.color || "#ffd966");
+    color.multiplyScalar(0.72); // Pop against the white canvas
     const group = new THREE.Group();
     const arrow = new THREE.ArrowHelper(direction, origin, length, color, Math.max(0.25, length * 0.16), Math.max(0.16, length * 0.12));
     group.add(arrow);
@@ -195,9 +196,9 @@ export class AnalyticOverlayManager {
     };
     const tickStep = Math.max(1, Number(bounds.tickStep) || 1);
     const colors = {
-      x: new THREE.Color("#ff7c7c"),
-      y: new THREE.Color("#7cf7e4"),
-      z: new THREE.Color("#48c9ff"),
+      x: new THREE.Color("#d13b3b"), // beautifully deep, premium red
+      y: new THREE.Color("#0c8a6f"), // rich emerald/teal
+      z: new THREE.Color("#1878b3"), // deep sapphire blue
     };
     const group = new THREE.Group();
 
@@ -211,7 +212,7 @@ export class AnalyticOverlayManager {
       const from = new THREE.Vector3(...axis.from);
       const to = new THREE.Vector3(...axis.to);
       const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
-      const material = new THREE.LineBasicMaterial({ color: colors[axis.key], transparent: true, opacity: 0.58 });
+      const material = new THREE.LineBasicMaterial({ color: colors[axis.key], transparent: true, opacity: 0.85 });
       const line = new THREE.Line(geometry, material);
       group.add(line);
 
