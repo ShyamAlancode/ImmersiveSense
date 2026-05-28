@@ -401,7 +401,22 @@ export function createWorld(container) {
     controls.update();
   }
 
-  function animate() {
+  let lastFrameTime = 0;
+  function animate(time) {
+    requestAnimationFrame(animate);
+
+    const profile = window.__performanceProfile || "high";
+    const targetFps = profile === "eco" ? 30 : 60;
+    const interval = 1000 / targetFps;
+    const elapsed = time - lastFrameTime;
+
+    if (time && elapsed < interval) {
+      return;
+    }
+    if (time) {
+      lastFrameTime = time - (elapsed % interval);
+    }
+
     const dist = camera.position.distanceTo(controls.target);
     // Progressive grid density visibility by zoom distance.
     fineGrid.visible = dist < 280;
@@ -414,7 +429,6 @@ export function createWorld(container) {
 
     controls.update();
     renderer.render(scene, camera);
-    requestAnimationFrame(animate);
   }
 
   window.addEventListener("resize", resize);

@@ -2423,9 +2423,48 @@ async function sendTutorMessage(messageText, options = {}) {
   let pendingStage = null;
   let pendingLearningStage = null;
 
+  // Show Cognitive Console and activate thinking state
+  const cogConsole = document.querySelector("#cognitiveConsole");
+  if (cogConsole) {
+    cogConsole.classList.remove("hidden");
+    const allNodes = cogConsole.querySelectorAll(".agent-node");
+    allNodes.forEach(node => {
+      node.classList.add("thinking");
+      const statusEl = node.querySelector(".agent-status");
+      if (statusEl) statusEl.textContent = "thinking...";
+    });
+  }
+
   try {
     await askTutor({
       ...payload,
+      onMeta: (meta) => {
+        // Update Cognitive Console with agent thoughts if present
+        const agentThoughts = meta?.agentThoughts;
+        if (agentThoughts && cogConsole) {
+          const agentMap = {
+            Mathematician: "mathematician",
+            Pedagogue: "pedagogue",
+            SceneArchitect: "architect",
+            SocraticTutor: "tutor"
+          };
+          for (const [key, id] of Object.entries(agentMap)) {
+            const thought = agentThoughts[key];
+            if (thought) {
+              const logEl = document.querySelector(`#agentLog-${id}`);
+              const nodeEl = document.querySelector(`#agentNode-${id}`);
+              const statusEl = nodeEl?.querySelector(".agent-status");
+              if (logEl) logEl.textContent = thought;
+              if (statusEl) statusEl.textContent = "complete";
+              nodeEl?.classList.remove("thinking");
+            }
+          }
+        }
+        // Update student model UI if present
+        if (meta?.studentModel && typeof window.updateStudentModelUI === "function") {
+          window.updateStudentModelUI(meta.studentModel);
+        }
+      },
       onChunk: (chunk) => {
         streamedText += chunk;
         accumulatedTutorText += chunk;

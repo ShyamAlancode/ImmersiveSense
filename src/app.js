@@ -84,11 +84,157 @@ export function bootstrapApp() {
   const mousePlaceMenuEl = document.querySelector("#mousePlaceMenu");
   const mousePlaceActionEl = document.querySelector("#mousePlaceAction");
 
+  // Probing the server for Render free-tier cold starts
+  const coldStartLoader = document.querySelector("#coldStartLoader");
+  const coldStartProgressBar = document.querySelector("#coldStartProgressBar");
+  const coldStartStatusText = document.querySelector("#coldStartStatusText");
+
+  let isHealthy = false;
+  let probeTimeoutId = setTimeout(() => {
+    if (!isHealthy && coldStartLoader) {
+      coldStartLoader.classList.remove("hidden");
+      // Animate trivia slides
+      const slides = document.querySelectorAll(".trivia-slide");
+      let activeSlideIndex = 0;
+      setInterval(() => {
+        if (slides.length > 0) {
+          slides[activeSlideIndex].classList.remove("active");
+          activeSlideIndex = (activeSlideIndex + 1) % slides.length;
+          slides[activeSlideIndex].classList.add("active");
+        }
+      }, 5000);
+
+      // Animate the progress bar slowly from 5% to 90% as we wait
+      let progress = 5;
+      const progressInterval = setInterval(() => {
+        if (progress < 90) {
+          progress += Math.random() * 4;
+          if (coldStartProgressBar) {
+            coldStartProgressBar.style.width = `${Math.min(progress, 90)}%`;
+          }
+        }
+      }, 1000);
+
+      window.__coldStartProgressInterval = progressInterval;
+    }
+  }, 800); // 800ms threshold for Render cold-start detection
+
+  async function checkServerHealth() {
+    const startTime = Date.now();
+    try {
+      if (coldStartStatusText) {
+        coldStartStatusText.textContent = "Connecting to API gateway...";
+      }
+      const response = await fetch('/api/health');
+      if (response.ok) {
+        isHealthy = true;
+        clearTimeout(probeTimeoutId);
+        if (window.__coldStartProgressInterval) {
+          clearInterval(window.__coldStartProgressInterval);
+        }
+
+        // Animate progress to 100%
+        if (coldStartProgressBar) {
+          coldStartProgressBar.style.width = "100%";
+        }
+        if (coldStartStatusText) {
+          coldStartStatusText.textContent = "Connected! Waking interface...";
+        }
+        setTimeout(() => {
+          if (coldStartLoader) {
+            coldStartLoader.classList.add("fade-out");
+            setTimeout(() => {
+              coldStartLoader.classList.add("hidden");
+            }, 400);
+          }
+        }, 600);
+        console.log(`[Cold-Start] Socratic server healthy in ${Date.now() - startTime}ms`);
+      } else {
+        throw new Error("Health probe returned non-ok status");
+      }
+    } catch (e) {
+      console.warn("[Cold-Start] Server health probe failed, retrying in 3 seconds...", e);
+      if (coldStartStatusText) {
+        coldStartStatusText.textContent = "Server asleep. Retrying connection...";
+      }
+      setTimeout(checkServerHealth, 3000);
+    }
+  }
+
+  checkServerHealth();
+
   const ctx = overlayEl.getContext("2d");
   const world = createWorld(worldMount);
   if (typeof world.setNavigationMode === "function") {
     world.setNavigationMode(DEFAULT_NAVIGATION_MODE);
   }
+
+  // Performance Profile Dropdown wiring
+  const btnModePerf = document.querySelector("#btn-mode-perf");
+  const perfDropdown = document.querySelector("#perfDropdown");
+  const perfItems = document.querySelectorAll(".perf-item");
+
+  window.__performanceProfile = "high"; // Default
+
+  btnModePerf?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isHidden = perfDropdown?.classList.contains("hidden");
+    if (isHidden) {
+      perfDropdown?.classList.remove("hidden");
+      btnModePerf.setAttribute("aria-expanded", "true");
+    } else {
+      perfDropdown?.classList.add("hidden");
+      btnModePerf.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  document.addEventListener("click", () => {
+    perfDropdown?.classList.add("hidden");
+    btnModePerf?.setAttribute("aria-expanded", "false");
+  });
+
+  perfItems.forEach((item) => {
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const profile = item.dataset.profile;
+      if (!profile) return;
+      
+      window.__performanceProfile = profile;
+      
+      // Update UI active states
+      perfItems.forEach((btn) => {
+        btn.classList.remove("active");
+        btn.querySelector(".perf-tick")?.classList.add("hidden");
+      });
+      item.classList.add("active");
+      item.querySelector(".perf-tick")?.classList.remove("hidden");
+      
+      if (btnModePerf) {
+        btnModePerf.replaceChildren(
+          btnModePerf.querySelector("svg").cloneNode(true),
+          document.createTextNode(` perf: ${profile}`)
+        );
+      }
+      
+      perfDropdown?.classList.add("hidden");
+      btnModePerf?.setAttribute("aria-expanded", "false");
+
+      // Set WebGL renderer pixel ratio based on profile
+      if (world && world.renderer) {
+        if (profile === "eco") {
+          world.renderer.setPixelRatio(1.0);
+          console.log("[Performance] Switched to Eco mode: pixel ratio 1.0, 30 FPS throttle active.");
+        } else {
+          world.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+          console.log("[Performance] Switched to High mode: pixel ratio full, 60 FPS active.");
+        }
+        // Force resize update to adapt canvas
+        if (typeof window.dispatchEvent === "function") {
+          window.dispatchEvent(new Event("resize"));
+        }
+      }
+    });
+  });
 
   const pipeline = new InteractionPipeline({ alpha: DEFAULT_SMOOTHING_ALPHA });
   pipeline.setProfile(DEFAULT_TRACKING_PROFILE);
@@ -3439,6 +3585,23 @@ export function bootstrapApp() {
       setStatus("Tracking live interaction signals", "ok");
       detectLoop();
       
+      // Update HUD elements
+      const hudBadge = document.querySelector("#hudActiveModeBadge");
+      const hudText = document.querySelector("#hudActiveModeText");
+      const hudBtn = document.querySelector("#hudWebcamToggleBtn");
+      if (hudBadge) {
+        hudBadge.textContent = "Webcam Mode 🖐️";
+        hudBadge.classList.add("eco-active");
+      }
+      if (hudText) {
+        hudText.textContent = "Webcam gestures active. Use hand movements to rotate & scale.";
+      }
+      if (hudBtn) {
+        hudBtn.textContent = "Stop Webcam ⏹️";
+        hudBtn.style.background = "#E24B4A";
+        hudBtn.style.borderColor = "#E24B4A";
+      }
+
       if (gestureGuideEl) {
         gestureGuideEl.classList.remove("hidden");
         setTimeout(() => gestureGuideEl.classList.add("hidden"), 10000);
@@ -3472,6 +3635,23 @@ export function bootstrapApp() {
     stopBtn.disabled = true;
     setStatus("Stopped", "idle");
     setIntent("stopped", "idle");
+
+    // Update HUD elements
+    const hudBadge = document.querySelector("#hudActiveModeBadge");
+    const hudText = document.querySelector("#hudActiveModeText");
+    const hudBtn = document.querySelector("#hudWebcamToggleBtn");
+    if (hudBadge) {
+      hudBadge.textContent = "Tactile Mode 🖱️";
+      hudBadge.classList.remove("eco-active");
+    }
+    if (hudText) {
+      hudText.textContent = "Webcam gestures off. Drag mouse/touch to explore 3D.";
+    }
+    if (hudBtn) {
+      hudBtn.textContent = "Enable Webcam 🖐️";
+      hudBtn.style.background = "#1D9E75";
+      hudBtn.style.borderColor = "#1D9E75";
+    }
   }
 
   document.addEventListener("visibilitychange", () => {
@@ -3804,6 +3984,16 @@ export function bootstrapApp() {
   startBtn.addEventListener("click", start);
   stopBtn.addEventListener("click", stop);
   window.addEventListener("beforeunload", stop);
+
+  // HUD viewport webcam toggle button
+  const hudWebcamToggleBtn = document.querySelector("#hudWebcamToggleBtn");
+  hudWebcamToggleBtn?.addEventListener("click", () => {
+    if (running) {
+      stop();
+    } else {
+      start();
+    }
+  });
 
   sceneRuntime.on("objects", () => {
     refreshContainedObjectVisibility();
