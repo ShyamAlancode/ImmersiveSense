@@ -1581,6 +1581,57 @@ function renderSceneInfo() {
   `;
 }
 
+// ─── Live Student Model UI updater ───────────────────────────────────────────
+let _sessionMessageCount = 0;
+
+function updateStudentModelUI(studentModel) {
+  if (!studentModel) return;
+
+  const graph = studentModel.graph || {};
+
+  // Color thresholds
+  function barColor(p) {
+    if (p >= 0.75) return "#1D9E75"; // green
+    if (p >= 0.50) return "#BA7517"; // amber
+    return "#E24B4A";                // red
+  }
+
+  // Update each bar
+  for (const [topic, node] of Object.entries(graph)) {
+    const pct = Math.round((node.probability || 0.5) * 100);
+    const fillEl = document.getElementById(`mastery-${topic}`);
+    const pctEl  = document.getElementById(`pct-${topic}`);
+    if (fillEl) {
+      fillEl.style.width = `${pct}%`;
+      fillEl.style.background = barColor(node.probability || 0.5);
+      // Smooth animated transition
+      fillEl.style.transition = "width 0.7s ease, background 0.5s ease";
+    }
+    if (pctEl) pctEl.textContent = `${pct}%`;
+  }
+
+  // Learner level
+  const levelEl = document.getElementById("session-learner-level");
+  if (levelEl && studentModel.learnerLevel) {
+    levelEl.textContent = studentModel.learnerLevel;
+    levelEl.className = "stat-row__value";
+    if (studentModel.learnerLevel === "advanced") levelEl.classList.add("stat-row__value--good");
+    else if (studentModel.learnerLevel === "beginner") levelEl.classList.add("stat-row__value--warn");
+  }
+
+  // Strongest / weakest topics
+  const entries = Object.entries(graph).filter(([, n]) => n.attempts > 0);
+  if (entries.length) {
+    const sorted = entries.sort(([, a], [, b]) => b.probability - a.probability);
+    const topicLabel = (key) => key.replace(/_/g, " ");
+    const strongestEl = document.getElementById("session-strongest-topic");
+    const weakestEl   = document.getElementById("session-weakest-topic");
+    if (strongestEl) strongestEl.textContent = topicLabel(sorted[0][0]);
+    if (weakestEl)   weakestEl.textContent   = topicLabel(sorted[sorted.length - 1][0]);
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function renderAssessment(assessment) {
   if (!sceneValidation) return;
 
@@ -2416,6 +2467,11 @@ async function sendTutorMessage(messageText, options = {}) {
   }
   tutorState.addMessage("user", text);
 
+  // Live counter — "messages sent"
+  _sessionMessageCount += 1;
+  const msgCountEl = document.getElementById("session-concepts-explored");
+  if (msgCountEl) msgCountEl.textContent = String(_sessionMessageCount);
+
   const typing = addTranscriptMessage("tutor", "...");
   typing?.classList.add("loading-dots");
   let streamedText = "";
@@ -2460,9 +2516,9 @@ async function sendTutorMessage(messageText, options = {}) {
             }
           }
         }
-        // Update student model UI if present
-        if (meta?.studentModel && typeof window.updateStudentModelUI === "function") {
-          window.updateStudentModelUI(meta.studentModel);
+        // Update live student model UI
+        if (meta?.studentModel) {
+          updateStudentModelUI(meta.studentModel);
         }
       },
       onChunk: (chunk) => {
