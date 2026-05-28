@@ -437,43 +437,7 @@
         </div>
       </div>
 
-      <!-- Cognitive Multi-Agent Console (inside Tutor tab) -->
-      <div id="cognitiveConsole" class="cognitive-console hidden">
-        <div class="console-head">
-          <span class="console-title">⚡ Cognitive Pipeline</span>
-          <div class="console-pulse"></div>
-        </div>
-        <div class="agent-thought-list">
-          <div class="agent-node" id="agentNode-mathematician">
-            <div class="agent-meta">
-              <span class="agent-name mathematician">Mathematician</span>
-              <span class="agent-status">idle</span>
-            </div>
-            <div class="agent-log" id="agentLog-mathematician">Waiting for a problem...</div>
-          </div>
-          <div class="agent-node" id="agentNode-pedagogue">
-            <div class="agent-meta">
-              <span class="agent-name pedagogue">Pedagogue</span>
-              <span class="agent-status">idle</span>
-            </div>
-            <div class="agent-log" id="agentLog-pedagogue">Waiting for student model...</div>
-          </div>
-          <div class="agent-node" id="agentNode-architect">
-            <div class="agent-meta">
-              <span class="agent-name architect">Scene Architect</span>
-              <span class="agent-status">idle</span>
-            </div>
-            <div class="agent-log" id="agentLog-architect">No scene planned yet...</div>
-          </div>
-          <div class="agent-node" id="agentNode-tutor">
-            <div class="agent-meta">
-              <span class="agent-name tutor">Socratic Tutor</span>
-              <span class="agent-status">idle</span>
-            </div>
-            <div class="agent-log" id="agentLog-tutor">Ready to coach...</div>
-          </div>
-        </div>
-      </div>
+
 
       <!-- Algebra Tab Content (Displays active scene objects & parameters) -->
       <div class="tab-content chat no-scrollbar" data-content="algebra" style="display: none;">
@@ -554,68 +518,7 @@
         </div>
       </div>
 
-      <!-- Section C — session summary (always visible below tabs) -->
-      <div class="session-card">
-        <div class="section-title">this session</div>
-        <div class="stat-row">
-          <span class="stat-row__label">messages sent</span>
-          <span class="stat-row__value" id="session-concepts-explored">0</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-row__label">learner level</span>
-          <span class="stat-row__value" id="session-learner-level">intermediate</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-row__label">strongest topic</span>
-          <span class="stat-row__value stat-row__value--good" id="session-strongest-topic">—</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-row__label">needs work</span>
-          <span class="stat-row__value stat-row__value--warn" id="session-weakest-topic">—</span>
-        </div>
-      </div>
 
-      <!-- Section D — mastery (always visible below session card) -->
-      <div class="mastery">
-        <div class="section-title">concept mastery</div>
-        <div class="mastery__rows" id="masteryRows">
-          <div class="mastery-row" data-topic="differentiation">
-            <span class="mastery-row__name">derivatives</span>
-            <div class="mastery-row__track">
-              <div id="mastery-differentiation" class="mastery-row__fill" style="width:50%; background:#BA7517;"></div>
-            </div>
-            <span class="mastery-row__pct" id="pct-differentiation">50%</span>
-          </div>
-          <div class="mastery-row" data-topic="integration">
-            <span class="mastery-row__name">integration</span>
-            <div class="mastery-row__track">
-              <div id="mastery-integration" class="mastery-row__fill" style="width:50%; background:#BA7517;"></div>
-            </div>
-            <span class="mastery-row__pct" id="pct-integration">50%</span>
-          </div>
-          <div class="mastery-row" data-topic="slope">
-            <span class="mastery-row__name">slope</span>
-            <div class="mastery-row__track">
-              <div id="mastery-slope" class="mastery-row__fill" style="width:50%; background:#BA7517;"></div>
-            </div>
-            <span class="mastery-row__pct" id="pct-slope">50%</span>
-          </div>
-          <div class="mastery-row" data-topic="trig_identities">
-            <span class="mastery-row__name">trig</span>
-            <div class="mastery-row__track">
-              <div id="mastery-trig_identities" class="mastery-row__fill" style="width:50%; background:#BA7517;"></div>
-            </div>
-            <span class="mastery-row__pct" id="pct-trig_identities">50%</span>
-          </div>
-          <div class="mastery-row" data-topic="general_geometry">
-            <span class="mastery-row__name">geometry</span>
-            <div class="mastery-row__track">
-              <div id="mastery-general_geometry" class="mastery-row__fill" style="width:50%; background:#BA7517;"></div>
-            </div>
-            <span class="mastery-row__pct" id="pct-general_geometry">50%</span>
-          </div>
-        </div>
-      </div>
 
       <!-- Section E — chat input & image attachments -->
       <div class="chat-input-wrapper">
