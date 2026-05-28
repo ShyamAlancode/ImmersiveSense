@@ -1,0 +1,2045 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1280" />
+<title>ImmersiveSense — AI Spatial Reasoning Tutor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+<link rel="stylesheet" href="./node_modules/katex/dist/katex.min.css" />
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+    }
+  }
+</script>
+<style>
+  /* ============ RESET & BASE ============ */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; width: 100%; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-weight: 400;
+    font-size: 13px;
+    color: #111111;
+    background: #FFFFFF;
+    min-width: 1280px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+  button {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  input {
+    font-family: inherit;
+    color: inherit;
+    border: none;
+    outline: none;
+    background: none;
+  }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* Hide scrollbars but keep scroll */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+  /* ============ APP SHELL ============ */
+  .app {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ============ ZONE 1 — TOP BAR ============ */
+  .topbar {
+    height: 44px;
+    flex: 0 0 44px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 0 12px;
+    border-bottom: 0.5px solid #E5E5E5;
+    background: #FFFFFF;
+    gap: 16px;
+  }
+  .topbar__left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .logo {
+    display: inline-flex;
+    align-items: baseline;
+    font-size: 14px;
+    letter-spacing: -0.01em;
+  }
+  .logo__immersive { color: #111111; font-weight: 500; }
+  .logo__sense { color: #1D9E75; font-weight: 500; }
+  .dot-sep {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: #E5E5E5;
+    display: inline-block;
+  }
+  .breadcrumb {
+    font-size: 12px;
+    color: #888888;
+  }
+
+  .topbar__center {
+    display: flex;
+    justify-content: center;
+  }
+  .problem-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 28px;
+    padding: 0 10px;
+    background: #F9F9F9;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 999px;
+    color: #444444;
+    max-width: 520px;
+  }
+  .problem-pill__icon, .problem-pill__edit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #888888;
+    flex: 0 0 auto;
+  }
+  .problem-pill__edit { cursor: pointer; }
+  .problem-pill__edit:hover { color: #1D9E75; }
+  .problem-pill__text {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    color: #111111;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .topbar__right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .model-badge {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    color: #444444;
+    background: #F5F5F5;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 4px;
+    padding: 3px 6px;
+    line-height: 1;
+    letter-spacing: -0.01em;
+  }
+  .vsep {
+    width: 0.5px;
+    height: 20px;
+    background: #E5E5E5;
+  }
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #E1F5EE;
+    color: #0F6E56;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #888888;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .icon-btn:hover { background: #F5F5F5; color: #444444; }
+
+  /* ============ APP BODY (sidebar + main + right) ============ */
+  .body {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+  }
+
+  /* ============ ZONE 2 — LEFT SIDEBAR ============ */
+  .sidebar {
+    width: 52px;
+    flex: 0 0 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    border-right: 0.5px solid #E5E5E5;
+    background: #FFFFFF;
+  }
+  .sidebar__icons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+  }
+  .sb-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #888888;
+    background: transparent;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .sb-btn:hover { background: #F5F5F5; color: #444444; }
+  .sb-btn.is-active {
+    background: #E1F5EE;
+    color: #1D9E75;
+  }
+  .sidebar__divider {
+    width: 24px;
+    height: 0.5px;
+    background: #E5E5E5;
+    margin: 12px 0;
+  }
+  .sidebar__spacer { flex: 1 1 auto; }
+  .sidebar__bottom {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-bottom: 4px;
+  }
+
+  /* ============ ZONE 3 — MAIN SCENE AREA ============ */
+  .main {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: #FFFFFF;
+  }
+
+  /* Layer A — Canvas */
+  .canvas-wrap {
+    flex: 1 1 auto;
+    position: relative;
+    min-height: 0;
+    background: #FAFAFA;
+    overflow: hidden;
+  }
+  #three-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  #overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 5;
+  }
+  .canvas-floating {
+    position: absolute;
+    z-index: 2;
+  }
+  .floating-formula {
+    top: 12px;
+    left: 12px;
+    background: #FFFFFF;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 8px;
+    padding: 8px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    color: #111111;
+    pointer-events: none; /* Fix 2: let Three.js orbit controls capture all mouse events in this corner */
+  }
+  .floating-formula .label {
+    display: block;
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    color: #888888;
+    margin-bottom: 4px;
+    letter-spacing: 0.02em;
+  }
+  .floating-controls {
+    bottom: 12px;
+    right: 12px;
+    font-size: 10px;
+    color: #888888;
+    letter-spacing: 0.01em;
+  }
+  .axis-indicator {
+    bottom: 12px;
+    left: 12px;
+    width: 60px;
+    height: 60px;
+  }
+  .axis-indicator text {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 8px;
+  }
+
+  /* Layer B — Scene toolbar */
+  .scene-toolbar {
+    height: 40px;
+    flex: 0 0 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    border-top: 0.5px solid #E5E5E5;
+    background: #FFFFFF;
+  }
+  .toolbar-modes {
+    display: flex;
+    gap: 6px;
+  }
+  .mode-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: transparent;
+    border: 0.5px solid #E5E5E5;
+    color: #888888;
+    font-size: 11px;
+    line-height: 1;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .mode-pill:hover { color: #444444; border-color: #BFBFBF; }
+  .mode-pill.is-active {
+    background: #E1F5EE;
+    color: #1D9E75;
+    border-color: #5DCAA5;
+  }
+  .toolbar-status {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    color: #888888;
+  }
+
+  /* Layer C — Moment strip */
+  .moment-strip {
+    height: 48px;
+    flex: 0 0 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 24px;
+    border-top: 0.5px solid #E5E5E5;
+    background: #FFFFFF;
+  }
+  .moments {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100%;
+    max-width: 640px;
+  }
+  .moment {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 0 0 auto;
+    width: 80px;
+    position: relative;
+    padding-top: 4px;
+  }
+  .moment__dot-wrap {
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .moment__dot {
+    border-radius: 50%;
+  }
+  .moment.is-done .moment__dot {
+    width: 8px;
+    height: 8px;
+    background: #1D9E75;
+  }
+  .moment.is-current .moment__dot {
+    width: 10px;
+    height: 10px;
+    background: #1D9E75;
+    position: relative;
+    z-index: 1;
+  }
+  .moment.is-current .moment__ring {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: rgba(29, 158, 117, 0.2);
+  }
+  .moment.is-upcoming .moment__dot {
+    width: 6px;
+    height: 6px;
+    background: transparent;
+    border: 0.5px solid #E5E5E5;
+  }
+  .moment__label {
+    margin-top: 6px;
+    font-size: 9px;
+    color: #888888;
+    letter-spacing: 0.02em;
+  }
+  .moment.is-done .moment__label,
+  .moment.is-current .moment__label {
+    color: #1D9E75;
+  }
+  .moment__line {
+    position: absolute;
+    top: 11px; /* center of 16px dot area + 4px padding */
+    height: 1px;
+    width: 60px;
+    left: 50%;
+    background: #E5E5E5;
+  }
+  .moment.is-done .moment__line {
+    background: #1D9E75;
+  }
+  .moment:last-child .moment__line { display: none; }
+
+  /* ============ ZONE 4 — RIGHT PANEL ============ */
+  .rightpanel {
+    width: 350px;
+    flex: 0 0 350px;
+    display: flex;
+    flex-direction: column;
+    border-left: 0.5px solid #E5E5E5;
+    background: #FFFFFF;
+    min-height: 0;
+  }
+
+  /* Section A — tabs */
+  .tabs {
+    height: 36px;
+    flex: 0 0 36px;
+    display: flex;
+    border-bottom: 0.5px solid #E5E5E5;
+  }
+  .tab {
+    flex: 1 1 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #888888;
+    background: transparent;
+    border: none;
+    border-bottom: 1.5px solid transparent;
+    margin-bottom: -0.5px; /* overlap container border so active 1.5px sits on the line */
+    height: 36px;
+    transition: color 120ms ease;
+  }
+  .tab:hover { color: #444444; }
+  .tab.is-active {
+    color: #1D9E75;
+    border-bottom-color: #1D9E75;
+  }
+
+  /* Section B — chat (scrollable) */
+  .chat {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .msg {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .msg--user { justify-content: flex-end; }
+  .msg__avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #E1F5EE;
+    color: #1D9E75;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 24px;
+  }
+  .bubble {
+    background: #F5F5F5;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #444444;
+    max-width: 85%;
+  }
+  .bubble--insight {
+    background: #E1F5EE;
+    border-color: #5DCAA5;
+    color: #085041;
+  }
+  .bubble code, .inline-code {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    background: #C5E8DC;
+    border-radius: 3px;
+    padding: 1px 4px;
+    color: #085041;
+  }
+
+  .quick-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .qa-btn {
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 4px 10px;
+    border: 0.5px solid #E5E5E5;
+    color: #444444;
+    background: #FFFFFF;
+    line-height: 1.2;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .qa-btn:hover { background: #F5F5F5; }
+  .qa-btn--primary {
+    background: #E1F5EE;
+    border-color: #5DCAA5;
+    color: #0F6E56;
+  }
+  .qa-btn--primary:hover { background: #D4EFE3; }
+
+  .alert-confusion {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin-top: 8px;
+    background: #FAEEDA;
+    border: 0.5px solid #FAC775;
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .alert-confusion__icon {
+    color: #BA7517;
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+  .alert-confusion__text {
+    font-size: 11px;
+    color: #633806;
+    line-height: 1.5;
+  }
+
+  /* Section C — session summary */
+  .session-card {
+    margin: 0 12px 10px 12px;
+    background: #F9F9F9;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 8px;
+    padding: 10px 12px;
+    flex: 0 0 auto;
+  }
+  .section-title {
+    font-size: 11px;
+    font-weight: 500;
+    color: #444444;
+    margin-bottom: 8px;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 0;
+  }
+  .stat-row__label { font-size: 11px; color: #888888; }
+  .stat-row__value { font-size: 11px; color: #111111; }
+  .stat-row__value--good { color: #1D9E75; }
+  .stat-row__value--warn { color: #BA7517; }
+
+  /* Section D — mastery */
+  .mastery {
+    padding: 0 12px 12px 12px;
+    flex: 0 0 auto;
+  }
+  .mastery__rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mastery-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mastery-row__name {
+    font-size: 11px;
+    color: #888888;
+    width: 72px;
+    flex: 0 0 72px;
+  }
+  .mastery-row__track {
+    flex: 1 1 auto;
+    height: 4px;
+    background: #EEEEEE;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .mastery-row__fill {
+    height: 100%;
+    border-radius: 2px;
+  }
+  .mastery-row__pct {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    color: #888888;
+    width: 28px;
+    flex: 0 0 28px;
+    text-align: right;
+  }
+
+  /* Section E — chat input */
+  .chat-input-wrapper {
+    display: flex;
+    flex-direction: column;
+    border-top: 0.5px solid #E5E5E5;
+    background: #FFFFFF;
+    flex: 0 0 auto;
+  }
+  .chat-input {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #FFFFFF;
+  }
+  .chat-input__field {
+    flex: 1 1 auto;
+    height: 32px;
+    border-radius: 8px;
+    border: 0.5px solid #E0E0E0;
+    background: #F5F5F5;
+    font-size: 12px;
+    padding: 0 10px;
+    color: #111111;
+  }
+  .chat-input__field::placeholder { color: #888888; }
+  .chat-input__field:focus {
+    border-color: #1D9E75;   /* Fix 4: visible focus ring so students see input is active */
+    background: #FFFFFF;
+  }
+  .chat-input__send {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #1D9E75;
+    color: #FFFFFF;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    transition: background 120ms ease;
+  }
+  .chat-input__send:hover { background: #178A65; }
+
+  /* ============ DYNAMIC TUTOR CHAT MESSAGES STYLING ============ */
+  .chat-msg {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    width: 100%;
+    margin-bottom: 10px;
+  }
+  .chat-msg.is-user {
+    justify-content: flex-end;
+  }
+  .chat-msg.is-tutor, .chat-msg.is-assistant {
+    justify-content: flex-start;
+  }
+  .chat-msg.is-tutor::before, .chat-msg.is-assistant::before {
+    content: "A";
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #E1F5EE;
+    color: #1D9E75;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 500;
+    flex: 0 0 24px;
+  }
+  .chat-msg.is-user::after {
+    content: "U";
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #F5F5F5;
+    color: #444444;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 500;
+    flex: 0 0 24px;
+    margin-left: 8px;
+  }
+  .chat-msg-bubble {
+    background: #F5F5F5;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #444444;
+    max-width: 75%;
+    word-break: break-word;
+  }
+  .chat-msg.is-user .chat-msg-bubble {
+    background: #F9F9F9;
+  }
+  .chat-msg-text {
+    line-height: 1.5;
+  }
+  .chat-msg-text p {
+    margin-bottom: 6px;
+  }
+  .chat-msg-text p:last-child {
+    margin-bottom: 0;
+  }
+  .tutor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .tutor-btn {
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 4px 10px;
+    border: 0.5px solid #E5E5E5;
+    color: #444444;
+    background: #FFFFFF;
+    line-height: 1.2;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .tutor-btn:hover { background: #F5F5F5; }
+  .tutor-btn--primary {
+    background: #E1F5EE;
+    border-color: #5DCAA5;
+    color: #0F6E56;
+  }
+  .tutor-btn--primary:hover { background: #D4EFE3; }
+
+  /* ============ DYNAMIC FORMULA / SOLUTION DRAWER STYLING ============ */
+  .formula-card, .solution-drawer {
+    background: #E1F5EE;
+    border: 0.5px solid #5DCAA5;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 10px 12px;
+    color: #085041;
+  }
+  .formula-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .formula-card-title {
+    font-size: 11px;
+    font-weight: 500;
+    color: #0F6E56;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .formula-card-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .formula-card-dismiss {
+    color: #0F6E56;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .formula-card-dismiss:hover { color: #111111; }
+  .formula-card-equation, .solution-drawer-answer-value {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    background: #FFFFFF;
+    border: 0.5px solid #5DCAA5;
+    border-radius: 4px;
+    padding: 8px;
+    margin: 6px 0;
+    color: #111111;
+    overflow-x: auto;
+  }
+  .formula-card-copy, .solution-drawer-steps {
+    font-size: 11px;
+    line-height: 1.5;
+    color: #085041;
+  }
+  .solution-step {
+    border-bottom: 0.5px solid rgba(29, 158, 117, 0.15);
+    padding: 6px 0;
+  }
+  .solution-step:last-child {
+    border-bottom: none;
+  }
+
+  /* ============ DYNAMIC CHECKPOINT STYLING ============ */
+  #chatCheckpoint {
+    background: #FAEEDA;
+    border: 0.5px solid #FAC775;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #chatCheckpointPrompt {
+    font-size: 11px;
+    color: #633806;
+    line-height: 1.5;
+  }
+  .chat-checkpoint-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .chat-checkpoint-actions button {
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 4px 10px;
+    border: 0.5px solid #FAC775;
+    color: #633806;
+    background: #FFFFFF;
+    line-height: 1.2;
+    transition: background 120ms ease;
+  }
+  .chat-checkpoint-actions button:hover {
+    background: #FFF9F0;
+  }
+
+  /* ============ DYNAMIC CALCULUS HUD STYLING ============ */
+  .calculus-hud {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 280px;
+    max-height: 80%;
+    background: #FFFFFF;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 8px;
+    color: #111111;
+    padding: 10px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+  }
+  .calculus-hud-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 0.5px solid #E5E5E5;
+    padding-bottom: 6px;
+  }
+  .calculus-hud-header h3 {
+    font-size: 12px;
+    font-weight: 500;
+    color: #111111;
+  }
+  .hud-sparkle {
+    font-size: 10px;
+    color: #1D9E75;
+    font-weight: 500;
+    background: #E1F5EE;
+    padding: 2px 6px;
+    border-radius: 99px;
+    border: 0.5px solid #5DCAA5;
+  }
+  .modality-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 2px;
+    background: #F5F5F5;
+    padding: 2px;
+    border-radius: 6px;
+  }
+  .modality-tab {
+    background: none;
+    border: none;
+    color: #888888;
+    font-size: 9px;
+    font-weight: 500;
+    padding: 4px 0;
+    border-radius: 4px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 120ms ease;
+  }
+  .modality-tab:hover {
+    color: #444444;
+  }
+  .modality-tab.active {
+    color: #1D9E75;
+    background: #FFFFFF;
+    border: 0.5px solid #E5E5E5;
+  }
+  .hud-control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: #F9F9F9;
+    padding: 8px;
+    border-radius: 6px;
+    border: 0.5px solid #E5E5E5;
+  }
+  .hud-control-group label {
+    font-size: 10px;
+    color: #888888;
+    display: flex;
+    justify-content: space-between;
+  }
+  .value-badge {
+    color: #1D9E75;
+    font-weight: 500;
+  }
+  .hud-control-group input[type="range"] {
+    width: 100%;
+    accent-color: #1D9E75;
+    cursor: pointer;
+  }
+  .hud-action-btn {
+    background: #FFFFFF;
+    border: 0.5px solid #E5E5E5;
+    color: #111111;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+  .hud-action-btn:hover {
+    background: #F5F5F5;
+  }
+  .hud-action-btn.is-paused {
+    background: #FAEEDA;
+    border-color: #FAC775;
+    color: #BA7517;
+  }
+  .hud-why-btn {
+    background: #E1F5EE;
+    border: 0.5px solid #5DCAA5;
+    color: #0F6E56;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    transition: background 120ms ease;
+    margin-top: 4px;
+  }
+  .hud-why-btn:hover {
+    background: #D4EFE3;
+  }
+  .thinking-layers-drawer {
+    border: 0.5px solid #E5E5E5;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .layers-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    font-size: 10px;
+    font-weight: 500;
+    color: #444444;
+    cursor: pointer;
+    background: #F5F5F5;
+  }
+  .layers-header:hover { background: #EEEEEE; }
+  .layers-body {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-top: 0.5px solid #E5E5E5;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .layer-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .layer-item strong {
+    font-size: 9px;
+    color: #1D9E75;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .layer-item p {
+    font-size: 10px;
+    color: #444444;
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  /* Helper visible validation class */
+  .validation-stat {
+    border-bottom: 0.5px solid #E5E5E5;
+    padding: 6px 0;
+  }
+  .validation-stat:last-child {
+    border-bottom: none;
+  }
+
+  /* ============ FLOATING CHATBOT ============ */
+  #floatingChatToggle {
+    position: fixed;
+    bottom: 100px;     /* above moment-strip (48px) + scene-toolbar (40px) */
+    left: 68px;          /* just past the 52px sidebar */
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: #1D9E75;
+    color: #FFFFFF;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 16px rgba(29,158,117,0.35);
+    z-index: 200;
+    transition: background 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+  }
+  #floatingChatToggle:hover {
+    background: #178A65;
+    transform: scale(1.08);
+    box-shadow: 0 6px 20px rgba(29,158,117,0.45);
+  }
+
+  #floatingChatbot {
+    position: fixed;
+    bottom: 160px;     /* opens upward above the toggle bubble */
+    left: 68px;          /* aligns with toggle */
+    width: 340px;
+    max-height: 480px;
+    display: flex;
+    flex-direction: column;
+    background: #FFFFFF;
+    border: 0.5px solid #E5E5E5;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+    z-index: 200;
+    overflow: hidden;
+    animation: chatPop 180ms ease;
+  }
+  #floatingChatbot.hidden { display: none !important; }
+  @keyframes chatPop {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .fchat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 0.5px solid #E5E5E5;
+    flex: 0 0 auto;
+  }
+  .fchat-header-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: #111111;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .fchat-header-title::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #1D9E75;
+    display: inline-block;
+  }
+  .fchat-close {
+    color: #888888;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 120ms ease;
+  }
+  .fchat-close:hover { color: #111111; }
+
+  #floatingChatHistory {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scrollbar-width: none;
+  }
+  #floatingChatHistory::-webkit-scrollbar { display: none; }
+
+  .chat-message {
+    max-width: 85%;
+    font-size: 12px;
+    line-height: 1.55;
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+  .chat-message p { margin: 0; }
+  .chat-message.user {
+    align-self: flex-end;
+    background: #E1F5EE;
+    border: 0.5px solid #5DCAA5;
+    color: #085041;
+  }
+  .chat-message.assistant {
+    align-self: flex-start;
+    background: #F5F5F5;
+    border: 0.5px solid #E5E5E5;
+    color: #444444;
+  }
+
+  .fchat-input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-top: 0.5px solid #E5E5E5;
+    flex: 0 0 auto;
+  }
+  #floatingChatInput {
+    flex: 1 1 auto;
+    height: 32px;
+    border-radius: 8px;
+    border: 0.5px solid #E0E0E0;
+    background: #F5F5F5;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 0 10px;
+    color: #111111;
+    outline: none;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  #floatingChatInput:focus {
+    border-color: #1D9E75;
+    background: #FFFFFF;
+  }
+  #floatingChatInput::placeholder { color: #888888; }
+  .fchat-send {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #1D9E75;
+    color: #FFFFFF;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    transition: background 120ms ease;
+  }
+  .fchat-send:hover { background: #178A65; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ ZONE 1 — TOP BAR ============ -->
+  <header class="topbar">
+    <div class="topbar__left">
+      <span class="logo">
+        <span class="logo__immersive">Immersive</span><span class="logo__sense">Sense</span>
+      </span>
+      <span class="dot-sep" aria-hidden="true"></span>
+      <span class="breadcrumb">Calculus · Derivatives</span>
+    </div>
+
+    <div class="topbar__center">
+      <div class="problem-pill" role="group" aria-label="Current problem">
+        <span class="problem-pill__icon" aria-hidden="true">
+          <!-- function fx icon -->
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 13c0-3 1-7 3.5-7 1 0 1.5.5 1.5 1.5"/>
+            <path d="M2 8.5h5"/>
+            <path d="M10 6l4 6M14 6l-4 6"/>
+          </svg>
+        </span>
+        <span id="problem-pill-text" class="problem-pill__text">Find all critical points of f(x) = x³ − 3x + 2</span>
+        <button class="problem-pill__edit" aria-label="Edit problem">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 2l3 3-8 8H3v-3z"/>
+            <path d="M10 3l3 3"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="topbar__right">
+      <div class="avatar" aria-label="Arjun">A</div>
+      <button class="icon-btn" aria-label="Settings">
+        <!-- settings gear icon -->
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="2"/>
+          <path d="M13.5 8a5.5 5.5 0 0 0-.1-1.2l1.4-1-1.4-2.4-1.7.4a5.5 5.5 0 0 0-2-1.2L9.3 1H6.7L6.3 2.6a5.5 5.5 0 0 0-2 1.2l-1.7-.4-1.4 2.4 1.4 1A5.5 5.5 0 0 0 2.5 8c0 .4 0 .8.1 1.2l-1.4 1 1.4 2.4 1.7-.4c.6.5 1.3.9 2 1.2l.4 1.6h2.6l.4-1.6c.7-.3 1.4-.7 2-1.2l1.7.4 1.4-2.4-1.4-1c.1-.4.1-.8.1-1.2z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ APP BODY ============ -->
+  <div class="body">
+
+    <!-- ============ ZONE 2 — LEFT SIDEBAR ============ -->
+    <nav class="sidebar" aria-label="Primary">
+      <div class="sidebar__icons">
+        <button class="sb-btn is-active" aria-label="Scene view" aria-current="page">
+          <!-- cube -->
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 2L3 6v8l7 4 7-4V6z"/>
+            <path d="M3 6l7 4 7-4"/>
+            <path d="M10 10v8"/>
+          </svg>
+        </button>
+        <button class="sb-btn" aria-label="Problem library">
+          <!-- list -->
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 5h11M6 10h11M6 15h11"/>
+            <circle cx="3.5" cy="5" r="0.8" fill="currentColor"/>
+            <circle cx="3.5" cy="10" r="0.8" fill="currentColor"/>
+            <circle cx="3.5" cy="15" r="0.8" fill="currentColor"/>
+          </svg>
+        </button>
+        <button class="sb-btn" aria-label="Student progress">
+          <!-- bar chart -->
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 17V9M9 17V5M15 17v-6"/>
+            <path d="M2 17h16"/>
+          </svg>
+        </button>
+        <button id="voiceRecordBtn" class="sb-btn" aria-label="Voice input">
+          <!-- mic -->
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="8" y="3" width="4" height="9" rx="2"/>
+            <path d="M5 10a5 5 0 0 0 10 0"/>
+            <path d="M10 15v3M7.5 18h5"/>
+          </svg>
+        </button>
+        <button id="questionImageTrigger" class="sb-btn" aria-label="Upload worksheet photo">
+          <!-- camera -->
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7h3l1.5-2h5L14 7h3v9H3z"/>
+            <circle cx="10" cy="11" r="3"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar__divider" aria-hidden="true"></div>
+
+      <div class="sidebar__spacer"></div>
+
+      <div class="sidebar__bottom">
+        <button class="sb-btn" aria-label="Help">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="10" cy="10" r="7"/>
+            <path d="M8 8a2 2 0 1 1 3 1.7c-.6.4-1 .8-1 1.5"/>
+            <circle cx="10" cy="14" r="0.6" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </nav>
+
+    <!-- ============ ZONE 3 — MAIN SCENE AREA ============ -->
+    <main class="main">
+
+      <!-- Layer A — Canvas -->
+      <div id="scene-canvas" class="canvas-wrap">
+        <canvas id="three-canvas"></canvas>
+        <canvas id="overlay"></canvas>
+        <div id="worldMount" style="position: absolute; top:0; left:0; width:100%; height:100%; z-index:1;"></div>
+
+        <!-- Floating function card top-left -->
+        <div class="canvas-floating floating-formula">
+          <span class="label">function</span>
+          f(x) = x³ − 3x + 2
+        </div>
+
+        <!-- Axis indicator bottom-left -->
+        <svg class="canvas-floating axis-indicator" viewBox="0 0 60 60" aria-label="Axis indicator">
+          <!-- origin -->
+          <circle cx="14" cy="46" r="1.5" fill="#444444"/>
+          <!-- X axis (red) -->
+          <line x1="14" y1="46" x2="34" y2="46" stroke="#E24B4A" stroke-width="1"/>
+          <polygon points="34,44 38,46 34,48" fill="#E24B4A"/>
+          <text x="40" y="48" fill="#E24B4A">X</text>
+          <!-- Y axis (green, up) -->
+          <line x1="14" y1="46" x2="14" y2="26" stroke="#1D9E75" stroke-width="1"/>
+          <polygon points="12,26 14,22 16,26" fill="#1D9E75"/>
+          <text x="9" y="20" fill="#1D9E75">Y</text>
+          <!-- Z axis (blue, diagonal) -->
+          <line x1="14" y1="46" x2="28" y2="32" stroke="#2F6FE0" stroke-width="1"/>
+          <polygon points="26,32 30,30 28,34" fill="#2F6FE0"/>
+          <text x="30" y="30" fill="#2F6FE0">Z</text>
+        </svg>
+
+        <!-- Controls hint bottom-right -->
+        <div class="canvas-floating floating-controls">
+          drag to rotate · scroll to zoom · pinch to grab
+        </div>
+
+        <!-- Floating glassmorphic Calculus Control HUD -->
+        <div id="calculusHud" class="calculus-hud hidden">
+          <div class="calculus-hud-header">
+            <h3>Calculus Explorer</h3>
+            <span class="hud-sparkle">⚡ Simulation World</span>
+          </div>
+          
+          <!-- Modality selection tabs -->
+          <div class="modality-tabs">
+            <button class="modality-tab active" data-modality="geometric">Geometry</button>
+            <button class="modality-tab" data-modality="physics">Physics</button>
+            <button class="modality-tab" data-modality="intuition">Intuition</button>
+            <button class="modality-tab" data-modality="algebraic">Algebra</button>
+          </div>
+
+          <!-- Riemann Partition Sum sliders (only in integral mode) -->
+          <div class="hud-control-group riemann-controls hidden">
+            <label for="riemannSlider">Riemann Partitions: <span id="riemannValue" class="value-badge">12</span></label>
+            <input type="range" id="riemannSlider" min="2" max="60" value="12" step="1" />
+          </div>
+
+          <!-- Tangent play/pause and x-slider (only in derivative mode) -->
+          <div class="hud-control-group derivative-controls hidden">
+            <button id="playPauseBtn" class="hud-action-btn">Pause Animation</button>
+            <label for="tangentSlider">Tangent Point (x₀)</label>
+            <input type="range" id="tangentSlider" min="-4.5" max="4.5" value="1.0" step="0.05" />
+          </div>
+
+          <!-- Limit controls (only in limit mode) -->
+          <div class="hud-control-group limit-controls hidden">
+            <button id="limitZoomBtn" class="hud-action-btn">Focus & Zoom Limit</button>
+          </div>
+
+          <!-- "Why this step?" Socratic query button -->
+          <button id="calculusWhyBtn" class="hud-why-btn">
+            <span>Why this step?</span>
+            <span class="sparkle-spark">✨</span>
+          </button>
+
+          <!-- Expandable deconstructed Thinking Layers -->
+          <div class="thinking-layers-drawer">
+            <div class="layers-header">
+              <span>Deconstructed Thinking Layers</span>
+              <span class="arrow">&#9656;</span>
+            </div>
+            <div class="layers-body hidden">
+              <div class="layer-item">
+                <strong>Symmetry:</strong>
+                <p id="layerSymmetry">None.</p>
+              </div>
+              <div class="layer-item">
+                <strong>Substitution Hints:</strong>
+                <p id="layerSubstitution">None.</p>
+              </div>
+              <div class="layer-item">
+                <strong>Graph Behavior:</strong>
+                <p id="layerBehavior">Continuous curve.</p>
+              </div>
+              <div class="layer-item">
+                <strong>Monotonicity:</strong>
+                <p id="layerMonotonicity">Increasing/decreasing intervals.</p>
+              </div>
+              <div class="layer-item">
+                <strong>Extrema:</strong>
+                <p id="layerExtrema">Critical points.</p>
+              </div>
+              <div class="layer-item">
+                <strong>Hidden Constraints:</strong>
+                <p id="layerConstraints">Domain constraints.</p>
+              </div>
+              <div class="layer-item">
+                <strong>Geometric Interpretation:</strong>
+                <p id="layerGeo">Visual geometry representation.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Layer B — Scene toolbar -->
+      <div class="scene-toolbar">
+        <div class="toolbar-modes">
+          <button class="mode-pill is-active" aria-pressed="true" id="btn-mode-explore">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 9V3.5a1 1 0 0 1 2 0V8"/>
+              <path d="M8 8V2.5a1 1 0 0 1 2 0V8"/>
+              <path d="M10 8V3.5a1 1 0 0 1 2 0V9"/>
+              <path d="M12 9V5a1 1 0 0 1 2 0v6a4 4 0 0 1-4 4H7a3 3 0 0 1-2.5-1.3L3 11.5"/>
+            </svg>
+            explore
+          </button>
+          <button class="mode-pill" aria-pressed="false" id="btn-mode-rotate">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 8a6 6 0 1 1-1.8-4.3"/>
+              <path d="M14 2v4h-4"/>
+            </svg>
+            rotate
+          </button>
+          <button class="mode-pill" aria-pressed="false" id="btn-mode-formula">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 4h8M4 8h8M4 12h5"/>
+              <path d="M11 11l3 3M14 11l-3 3"/>
+            </svg>
+            formula
+          </button>
+          <button class="mode-pill" aria-pressed="false" id="btn-mode-reset">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 8a5 5 0 1 0 1.5-3.5"/>
+              <path d="M3 3v3h3"/>
+            </svg>
+            reset
+          </button>
+        </div>
+        <div class="toolbar-status mono" id="toolbarStatus">derivative explorer · 3D mode</div>
+      </div>
+
+      <!-- Layer C — Moment strip -->
+      <div id="moment-strip" class="moment-strip">
+        <div class="moments">
+          <div class="moment is-done" data-moment-index="0">
+            <div class="moment__dot-wrap"><span class="moment__dot"></span></div>
+            <div class="moment__label">observe</div>
+            <span class="moment__line"></span>
+          </div>
+          <div class="moment is-current" data-moment-index="1">
+            <div class="moment__dot-wrap">
+              <span class="moment__ring"></span>
+              <span class="moment__dot"></span>
+            </div>
+            <div class="moment__label">explore</div>
+            <span class="moment__line"></span>
+          </div>
+          <div class="moment is-upcoming" data-moment-index="2">
+            <div class="moment__dot-wrap"><span class="moment__dot"></span></div>
+            <div class="moment__label">predict</div>
+            <span class="moment__line"></span>
+          </div>
+          <div class="moment is-upcoming" data-moment-index="3">
+            <div class="moment__dot-wrap"><span class="moment__dot"></span></div>
+            <div class="moment__label">verify</div>
+            <span class="moment__line"></span>
+          </div>
+          <div class="moment is-upcoming" data-moment-index="4">
+            <div class="moment__dot-wrap"><span class="moment__dot"></span></div>
+            <div class="moment__label">reflect</div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ ZONE 4 — RIGHT PANEL ============ -->
+    <aside class="rightpanel" aria-label="Tutor panel">
+
+      <!-- Section A — tabs -->
+      <div class="tabs" role="tablist">
+        <button class="tab panel-tab is-active active" role="tab" aria-selected="true" data-tab="tutor">tutor</button>
+        <button class="tab panel-tab" role="tab" aria-selected="false" data-tab="algebra">algebra</button>
+        <button class="tab panel-tab" role="tab" aria-selected="false" data-tab="progress">progress</button>
+      </div>
+
+      <!-- Tutor Tab Content -->
+      <div id="chatMessages" class="tab-content active chat no-scrollbar" data-content="tutor">
+        <!-- Floating formula card / solution drawer rendered inline at top of chat when visible -->
+        <div id="formulaCard" class="formula-card hidden">
+          <div class="formula-card-head">
+            <h3 id="formulaCardTitle" class="formula-card-title">Formula</h3>
+            <div class="formula-card-actions">
+              <button id="formulaCardRevealBtn" class="tutor-btn tutor-btn--primary" type="button">View Solution</button>
+              <button id="formulaCardCloseBtn" class="formula-card-dismiss" type="button">&times;</button>
+            </div>
+          </div>
+          <div id="formulaCardEquation" class="formula-card-equation"></div>
+          <div id="formulaCardExplanation" class="formula-card-copy"></div>
+        </div>
+
+        <div id="solutionDrawer" class="solution-drawer hidden">
+          <div class="formula-card-head">
+            <h3 id="solutionDrawerTitle" class="formula-card-title">Worked Solution</h3>
+            <button id="solutionDrawerClose" class="formula-card-dismiss" type="button">&times;</button>
+          </div>
+          <div id="solutionDrawerAnswer" class="solution-drawer-answer hidden">
+            <p class="formula-card-title">Final Answer</p>
+            <div id="solutionDrawerAnswerValue" class="solution-drawer-answer-value"></div>
+          </div>
+          <div id="solutionDrawerSteps" class="solution-drawer-steps"></div>
+        </div>
+
+        <!-- Dynamic Chat welcomes or messages append here -->
+        <div class="chat-welcome">
+          <p style="font-weight: 500; font-size: 13px; color: #111111; margin-bottom: 4px;">Let's explore together</p>
+          <p style="color: #888888; font-size: 11px;">Ask a calculus or geometry problem and we'll build a live 3D simulation to reason through it.</p>
+        </div>
+
+        <!-- Chat checkpoint inline at bottom of messages -->
+        <div id="chatCheckpoint" class="hidden">
+          <p id="chatCheckpointPrompt">Does this look correct?</p>
+          <div class="chat-checkpoint-actions">
+            <button id="checkpointYesBtn" type="button">Yes, continue</button>
+            <button id="checkpointUnsureBtn" type="button">I'm not sure</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Algebra Tab Content (Displays active scene objects & parameters) -->
+      <div class="tab-content chat no-scrollbar" data-content="algebra" style="display: none;">
+        <div class="session-card" style="margin:0 0 10px 0; width:100%;">
+          <div class="section-title">staged lesson diagnostics</div>
+          <div id="sceneValidation" class="scene-validation">
+            <p class="muted-text">The tutor will inspect the scene and guide you through the learning layers.</p>
+          </div>
+        </div>
+        <div class="session-card" style="margin:0 0 10px 0; width:100%;">
+          <div class="section-title">active scene objects</div>
+          <div id="objectList" class="object-list" style="display: flex; flex-direction: column; gap: 6px;"></div>
+          <div class="stat-row" style="margin-top: 10px; border-top: 0.5px solid #E5E5E5; padding-top: 6px;">
+            <span class="stat-row__label">Total count</span>
+            <span id="objectCount" class="stat-row__value mono">0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress Tab Content -->
+      <div class="tab-content chat no-scrollbar" data-content="progress" style="display: none;">
+        <div class="session-card" style="margin:0 0 10px 0; width:100%;">
+          <div class="section-title">learning profile</div>
+          <div class="stat-row">
+            <span class="stat-row__label">active topic</span>
+            <span class="stat-row__value">Calculus · Derivatives</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-row__label">socratic path</span>
+            <span class="stat-row__value">visual exploration</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section C — session summary (always visible below tabs) -->
+      <div class="session-card">
+        <div class="section-title">this session</div>
+        <div class="stat-row">
+          <span class="stat-row__label">concepts explored</span>
+          <span class="stat-row__value" id="session-concepts-explored">4</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-row__label">critical points</span>
+          <span class="stat-row__value stat-row__value--good" id="session-critical-points">building ↑</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-row__label">chain rule</span>
+          <span class="stat-row__value stat-row__value--warn" id="session-chain-rule">needs review</span>
+        </div>
+      </div>
+
+      <!-- Section D — mastery (always visible below session card) -->
+      <div class="mastery">
+        <div class="section-title">concept mastery</div>
+        <div class="mastery__rows">
+          <div class="mastery-row">
+            <span class="mastery-row__name">derivatives</span>
+            <div class="mastery-row__track">
+              <div id="mastery-derivatives" class="mastery-row__fill" style="width:78%; background:#1D9E75;"></div>
+            </div>
+            <span class="mastery-row__pct" id="pct-derivatives">78%</span>
+          </div>
+          <div class="mastery-row">
+            <span class="mastery-row__name">limits</span>
+            <div class="mastery-row__track">
+              <div id="mastery-limits" class="mastery-row__fill" style="width:91%; background:#1D9E75;"></div>
+            </div>
+            <span class="mastery-row__pct" id="pct-limits">91%</span>
+          </div>
+          <div class="mastery-row">
+            <span class="mastery-row__name">integration</span>
+            <div class="mastery-row__track">
+              <div id="mastery-integration" class="mastery-row__fill" style="width:44%; background:#BA7517;"></div>
+            </div>
+            <span class="mastery-row__pct" id="pct-integration">44%</span>
+          </div>
+          <div class="mastery-row">
+            <span class="mastery-row__name">chain rule</span>
+            <div class="mastery-row__track">
+              <div id="mastery-chainrule" class="mastery-row__fill" style="width:31%; background:#E24B4A;"></div>
+            </div>
+            <span class="mastery-row__pct" id="pct-chainrule">31%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section E — chat input & image attachments -->
+      <div class="chat-input-wrapper">
+        <div id="questionImagePreview" class="question-image-preview hidden" style="padding: 6px 12px; border-bottom: 0.5px solid #E5E5E5; display: flex; align-items: center; gap: 8px; background: #F9F9F9;">
+          <img id="questionImageThumb" alt="Uploaded diagram preview" style="max-height: 32px; border-radius: 4px; border: 0.5px solid #E5E5E5;" />
+          <span id="questionImageMeta" class="question-image-meta" style="font-size: 10px; color: #888888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0;"></span>
+          <button id="questionImageClear" class="question-upload-clear" type="button" style="color: #E24B4A; font-size: 10px; font-weight: 500;">Remove</button>
+        </div>
+        <div class="chat-input">
+          <input id="chatInput" class="chat-input__field" type="text" placeholder="ask anything about this…" aria-label="Chat input" />
+          <button id="chatSend" class="chat-input__send" aria-label="Send">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 13V3"/>
+              <path d="M4 7l4-4 4 4"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- ============ FLOATING CHATBOT UI ============ -->
+<!-- Toggle bubble (bottom-right corner) -->
+<button id="floatingChatToggle" aria-label="Open AI tutor chat">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+  </svg>
+</button>
+
+<!-- Chat panel -->
+<div id="floatingChatbot" class="hidden" role="dialog" aria-label="AI Tutor Chat">
+  <div class="fchat-header">
+    <span class="fchat-header-title">ImmersiveSense Tutor</span>
+    <button id="floatingChatClose" class="fchat-close" aria-label="Close chat">&times;</button>
+  </div>
+  <div id="floatingChatHistory" role="log" aria-live="polite">
+    <div class="chat-message assistant"><p>Hi! Ask me any calculus or geometry question and I'll help you reason through it step by step. 🧠</p></div>
+  </div>
+  <form id="floatingChatForm" autocomplete="off">
+    <div class="fchat-input-row">
+      <input id="floatingChatInput" type="text" placeholder="Ask anything…" aria-label="Chat message" />
+      <button type="submit" class="fchat-send" aria-label="Send">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 13V3"/><path d="M4 7l4-4 4 4"/>
+        </svg>
+      </button>
+    </div>
+  </form>
+</div>
+
+<!-- ============ HIDDEN ELEMENTS FOR UNIT TESTS & ORCHESTRATION ============ -->
+<div style="position: absolute; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none;" id="hidden-orchestrator">
+  <video id="webcam" autoplay playsinline muted></video>
+  <div class="question-section" id="questionSection">
+    <button id="lessonPanelToggle" type="button"></button>
+    <span id="lessonPanelSummary"></span>
+    <textarea id="questionInput"></textarea>
+    <button id="questionSubmit" type="button"></button>
+    <div id="questionStatus"></div>
+    <div id="questionMathPreview"></div>
+    <input id="questionImageInput" type="file" accept="image/png,image/jpeg,image/webp" />
+    <button id="newQuestionBtn" type="button"></button>
+  </div>
+  <div id="stageRail">
+    <span id="stageRailProgress"></span>
+    <p id="stageRailGoal"></p>
+    <button id="stageRailNext" type="button"></button>
+    <h3 id="stageRailTitle"></h3>
+  </div>
+  <div id="chatMathPreview"></div>
+  <div id="voiceControl">
+    <div class="mic-ring"></div>
+    <div id="voiceBars"><span></span><span></span><span></span></div>
+    <p id="voiceStatus"></p>
+  </div>
+  <div id="sceneInfo"></div>
+  <div id="cameraBookmarkList"></div>
+  <div id="stepIndicator">
+    <button id="stepPrev" type="button"></button>
+    <span id="stepLabel"></span>
+    <button id="stepNext" type="button"></button>
+  </div>
+  <div id="mousePlaceMenu">
+    <button id="mousePlaceAction" type="button"></button>
+  </div>
+  <div id="gestureGuide"></div>
+  <div id="unfoldDrawer">
+    <h2 id="unfoldTitle"></h2>
+    <p id="unfoldSubtitle"></p>
+    <div id="unfoldStats"></div>
+    <div id="unfoldFormula"></div>
+    <div id="unfoldBreakdown"></div>
+    <div id="unfoldNet"></div>
+    <button id="unfoldCloseBtn" type="button"></button>
+  </div>
+  <!-- Dummy button definitions to keep app bootstrap happy -->
+  <button id="startBtn" type="button"></button>
+  <button id="stopBtn" type="button"></button>
+  <button id="undoBtn" type="button"></button>
+  <button id="clearBtn" type="button"></button>
+  <button id="exportMathBtn" type="button"></button>
+  <button id="saveSceneBtn" type="button"></button>
+  <button id="loadSceneBtn" type="button"></button>
+  <input id="loadSceneInput" type="file" />
+  <button id="resetViewBtn" type="button"></button>
+  <button id="resetViewSceneBtn" type="button"></button>
+  <select id="shapeType"><option value="cube">Cube</option></select>
+  <input id="colorInput" type="color" />
+  <pre id="debugState"></pre>
+  <p id="intentBadge"></p>
+  <p id="status"></p>
+</div>
+
+<!-- ============ GLUE JAVASCRIPT FOR UI CONTROLS ============ -->
+<script>
+  window.addEventListener("DOMContentLoaded", () => {
+    // 1. Tab Switching logic
+    const panelTabs = document.querySelectorAll(".panel-tab");
+    const tabContents = document.querySelectorAll(".tab-content");
+
+    panelTabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const target = tab.getAttribute("data-tab");
+        panelTabs.forEach((t) => {
+          t.classList.toggle("active", t.getAttribute("data-tab") === target);
+          t.classList.toggle("is-active", t.getAttribute("data-tab") === target);
+          t.setAttribute("aria-selected", String(t.getAttribute("data-tab") === target));
+        });
+        tabContents.forEach((content) => {
+          const isTarget = content.getAttribute("data-content") === target;
+          content.classList.toggle("active", isTarget);
+          content.style.display = isTarget ? "flex" : "none";
+        });
+      });
+    });
+
+    // 2. Quick Action Buttons handler
+    // We delegate clicks on any quick action buttons to fill the chat and send
+    document.addEventListener("click", (e) => {
+      const qaBtn = e.target.closest(".qa-btn");
+      if (qaBtn) {
+        const text = qaBtn.textContent.trim();
+        const chatInput = document.getElementById("chatInput");
+        const chatSend = document.getElementById("chatSend");
+        if (chatInput && chatSend) {
+          chatInput.value = text;
+          chatSend.click();
+        }
+      }
+    });
+
+    // 3. Problem Pill Edit Dialog handler
+    const editBtn = document.querySelector(".problem-pill__edit");
+    const problemTextSpan = document.getElementById("problem-pill-text");
+    const problemPill = document.querySelector(".problem-pill");
+
+    if (editBtn && problemTextSpan && problemPill) {
+      editBtn.addEventListener("click", () => {
+        const currentText = problemTextSpan.textContent.trim();
+        
+        // Replace content inside pill with input
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = currentText;
+        input.className = "mono";
+        input.style.cssText = "background:transparent; color:#111111; border:none; font-size:12px; width:100%; outline:none; font-family:'JetBrains Mono', monospace;";
+        
+        const originalContent = Array.from(problemPill.childNodes);
+        
+        problemPill.innerHTML = "";
+        problemPill.appendChild(input);
+        input.focus();
+
+        const restorePill = () => {
+          problemPill.innerHTML = "";
+          originalContent.forEach(node => problemPill.appendChild(node));
+          // Re-bind click listener on newly appended edit button
+          const newEditBtn = problemPill.querySelector(".problem-pill__edit");
+          if (newEditBtn) {
+            newEditBtn.addEventListener("click", arguments.callee);
+          }
+        };
+
+        input.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter") {
+            const newText = input.value.trim();
+            if (newText) {
+              const chatInput = document.getElementById("chatInput");
+              const chatSend = document.getElementById("chatSend");
+              if (chatInput && chatSend) {
+                chatInput.value = newText;
+                chatSend.click();
+              }
+            }
+            restorePill();
+          } else if (evt.key === "Escape") {
+            restorePill();
+          }
+        });
+
+        input.addEventListener("blur", () => {
+          // Wrap in timeout to check if focus moved elsewhere, else restore
+          setTimeout(restorePill, 150);
+        });
+      });
+    }
+
+    // 4. Scene Toolbar Pills handler
+    const modeExploreBtn = document.getElementById("btn-mode-explore");
+    const modeRotateBtn = document.getElementById("btn-mode-rotate");
+    const modeFormulaBtn = document.getElementById("btn-mode-formula");
+    const modeResetBtn = document.getElementById("btn-mode-reset");
+    const floatingFormula = document.querySelector(".floating-formula");
+
+    if (modeExploreBtn) {
+      modeExploreBtn.addEventListener("click", () => {
+        document.querySelectorAll(".mode-pill").forEach(p => p.classList.remove("is-active"));
+        modeExploreBtn.classList.add("is-active");
+        if (window.world?.controls) {
+          window.world.controls.autoRotate = false;
+        }
+      });
+    }
+
+    if (modeRotateBtn) {
+      modeRotateBtn.addEventListener("click", () => {
+        const wasActive = modeRotateBtn.classList.contains("is-active");
+        document.querySelectorAll(".mode-pill").forEach(p => p.classList.remove("is-active"));
+        if (!wasActive) {
+          modeRotateBtn.classList.add("is-active");
+          if (window.world?.controls) {
+            window.world.controls.autoRotate = true;
+          }
+        } else {
+          modeExploreBtn?.classList.add("is-active");
+          if (window.world?.controls) {
+            window.world.controls.autoRotate = false;
+          }
+        }
+      });
+    }
+
+    if (modeFormulaBtn) {
+      modeFormulaBtn.addEventListener("click", () => {
+        modeFormulaBtn.classList.toggle("is-active");
+        if (floatingFormula) {
+          floatingFormula.classList.toggle("hidden");
+        }
+      });
+    }
+
+    if (modeResetBtn) {
+      modeResetBtn.addEventListener("click", () => {
+        const hiddenResetBtn = document.getElementById("resetViewSceneBtn");
+        if (hiddenResetBtn) {
+          hiddenResetBtn.click();
+        }
+        // Brief visual feedback on explore button
+        document.querySelectorAll(".mode-pill").forEach(p => p.classList.remove("is-active"));
+        modeExploreBtn?.classList.add("is-active");
+      });
+    }
+
+    // 5. MutationObserver to sync Hidden elements to the visible UI
+    // Sync active problem title from #lessonPanelSummary to #problem-pill-text and .floating-formula
+    const lessonSummaryEl = document.getElementById("lessonPanelSummary");
+    if (lessonSummaryEl) {
+      const summaryObserver = new MutationObserver(() => {
+        const cleanQuestion = lessonSummaryEl.textContent.trim();
+        if (cleanQuestion && cleanQuestion !== "Edit the prompt or upload a different diagram.") {
+          if (problemTextSpan) problemTextSpan.textContent = cleanQuestion;
+          if (floatingFormula) {
+            // Keep formula block updated if it contains a function definition
+            const formulaMatch = cleanQuestion.match(/f\(x\)\s*=\s*[^.\n]+/i);
+            floatingFormula.innerHTML = `<span class="label">function</span> ${formulaMatch ? formulaMatch[0] : cleanQuestion}`;
+          }
+        }
+      });
+      summaryObserver.observe(lessonSummaryEl, { characterData: true, childList: true, subtree: true });
+    }
+
+    // Sync lesson stage progress to Moment strip dots
+    const stageProgressEl = document.getElementById("stageRailProgress");
+    const moments = document.querySelectorAll(".moment");
+    if (stageProgressEl && moments.length) {
+      const progressObserver = new MutationObserver(() => {
+        const progressText = stageProgressEl.textContent.trim().toLowerCase();
+        
+        let activeIndex = -1;
+        if (progressText === "complete") {
+          activeIndex = 5; // All done
+        } else if (progressText.includes("predict")) {
+          activeIndex = 2;
+        } else if (progressText.includes("check")) {
+          activeIndex = 3;
+        } else if (progressText.includes("reflect")) {
+          activeIndex = 4;
+        } else if (progressText.includes("explore")) {
+          activeIndex = 1;
+        } else {
+          // Matches e.g. "1 / 3" -> index 0
+          const parts = progressText.split("/");
+          const currentVal = parseInt(parts[0], 10);
+          if (!isNaN(currentVal)) {
+            activeIndex = currentVal - 1;
+          }
+        }
+
+        if (activeIndex >= 0) {
+          moments.forEach((moment, idx) => {
+            moment.classList.remove("is-done", "is-current", "is-upcoming");
+            const ring = moment.querySelector(".moment__ring");
+            if (ring) ring.remove();
+
+            if (idx < activeIndex) {
+              moment.classList.add("is-done");
+            } else if (idx === activeIndex) {
+              moment.classList.add("is-current");
+              const dotWrap = moment.querySelector(".moment__dot-wrap");
+              if (dotWrap && !moment.querySelector(".moment__ring")) {
+                const ringEl = document.createElement("span");
+                ringEl.className = "moment__ring";
+                dotWrap.insertBefore(ringEl, dotWrap.firstChild);
+              }
+            } else {
+              moment.classList.add("is-upcoming");
+            }
+          });
+        }
+      });
+      progressObserver.observe(stageProgressEl, { characterData: true, childList: true, subtree: true });
+    }
+
+    // 6. Student Model UI Updater
+    window.updateStudentModelUI = function(studentModel) {
+      if (!studentModel || !studentModel.graph) return;
+      const graph = studentModel.graph;
+
+      // Map topics to percentages
+      const derivativesMastery = graph.differentiation?.probability ?? graph.slope?.probability ?? 0.5;
+      const limitsMastery = graph.slope?.probability ?? 0.5;
+      const integrationMastery = graph.integration?.probability ?? 0.5;
+      const chainRuleMastery = graph.differentiation?.probability 
+        ? Math.max(0.1, graph.differentiation.probability - 0.15) 
+        : 0.5;
+
+      const derivativesPct = Math.round(derivativesMastery * 100);
+      const limitsPct = Math.round(limitsMastery * 100);
+      const integrationPct = Math.round(integrationMastery * 100);
+      const chainRulePct = Math.round(chainRuleMastery * 100);
+
+      // Helper to update fill and text
+      const updateRow = (fillId, textId, pct) => {
+        const fill = document.getElementById(fillId);
+        const text = document.getElementById(textId);
+        if (fill) {
+          fill.style.width = pct + "%";
+          if (pct >= 75) {
+            fill.style.backgroundColor = "#1D9E75";
+          } else if (pct >= 40) {
+            fill.style.backgroundColor = "#BA7517";
+          } else {
+            fill.style.backgroundColor = "#E24B4A";
+          }
+        }
+        if (text) {
+          text.textContent = pct + "%";
+        }
+      };
+
+      updateRow("mastery-derivatives", "pct-derivatives", derivativesPct);
+      updateRow("mastery-limits", "pct-limits", limitsPct);
+      updateRow("mastery-integration", "pct-integration", integrationPct);
+      updateRow("mastery-chainrule", "pct-chainrule", chainRulePct);
+
+      // Update session card values
+      const exploredCount = Object.values(graph).filter(node => node.attempts > 0).length || 1;
+      const conceptsExploredEl = document.getElementById("session-concepts-explored");
+      if (conceptsExploredEl) {
+        conceptsExploredEl.textContent = exploredCount;
+      }
+
+      // Helper to get status label and class
+      const getStatusDetails = (pct) => {
+        if (pct >= 75) return { label: "mastered", className: "stat-row__value stat-row__value--good" };
+        if (pct >= 40) return { label: "building ↑", className: "stat-row__value stat-row__value--good" };
+        return { label: "needs review", className: "stat-row__value stat-row__value--warn" };
+      };
+
+      const derivativesStatus = getStatusDetails(derivativesPct);
+      const chainRuleStatus = getStatusDetails(chainRulePct);
+
+      const criticalPointsEl = document.getElementById("session-critical-points");
+      if (criticalPointsEl) {
+        criticalPointsEl.textContent = derivativesStatus.label;
+        criticalPointsEl.className = derivativesStatus.className;
+      }
+
+      const chainRuleEl = document.getElementById("session-chain-rule");
+      if (chainRuleEl) {
+        chainRuleEl.textContent = chainRuleStatus.label;
+        chainRuleEl.className = chainRuleStatus.className;
+      }
+    };
+  });
+</script>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
