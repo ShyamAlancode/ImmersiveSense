@@ -1,0 +1,65 @@
+{
+  "default": {
+    "sessionId": "default",
+    "learnerLevel": "intermediate",
+    "graph": {
+      "slope": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "3d_coordinates": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "line_plane_intersection": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "skew_lines": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "differentiation": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "integration": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "trig_identities": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "arithmetic": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      },
+      "general_geometry": {
+        "probability": 0.5,
+        "attempts": 0,
+        "correct": 0,
+        "lastUpdated": 1779924213018
+      }
+    },
+    "misconceptions": [],
+    "createdAt": 1779924213018,
+    "updatedAt": 1779924213018
+  }
+}

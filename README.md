@@ -9,7 +9,9 @@
 
 **ImmersiveSense** is a state-of-the-art, interactive 3D Socratic math and physics tutor. It transforms abstract mathematical formulas, complex coordinate geometry, and physics vector fields into real-time, interactive 3D visual environments. 
 
-Rather than relying on generic, error-prone LLM wrapper designs, ImmersiveSense couples a **6-layer hybrid cognitive architecture** with a **deterministic Computer Algebra System (CAS)**, **real-time webcam hand tracking**, and a **zero-latency background AudioWorklet voice coach**.
+Rather than relying on generic, error-prone LLM wrapper designs, ImmersiveSense couples a **5-layer hybrid cognitive architecture** with a **deterministic Computer Algebra System (CAS)** and **real-time webcam hand tracking**.
+
+✨ **Live Web Application**: [https://immersivesense.onrender.com/](https://immersivesense.onrender.com/)
 
 ---
 
@@ -31,12 +33,8 @@ Rather than relying on generic, error-prone LLM wrapper designs, ImmersiveSense 
 - **MediaPipe Hand Landmarkers**: Rotates, zooms, and scales 3D vector fields or geometry matrices using natural, real-time hand coordinates captured from your webcam.
 - **Tactile Hotkeys**: Toggle camera auto-rotations, show/hide LaTeX overlays, and reset viewport angles seamlessly with custom keyboard layout triggers.
 
-### 4. 🎙️ Zero-Latency AudioWorklet Voice Coach
-- **Thread-Isolated Web Audio**: Upgraded Web Audio pipeline to modern browser `AudioWorkletNode` blocks running on a separate thread (eliminating main thread UI stutter).
-- **Free local STT Fallback**: Auto-detects empty AWS Polly/Bedrock credentials and initiates a cost-free fallback: records LPCM microphone streams, transcribes via **Groq Whisper Large**, reasons using **Gemini 2.5 Flash**, and speaks answers back with browser Web Speech synthesis.
-
-### 5. 🧠 6-Layer Socratic Cognitive Architecture
-- **Multi-Agent Pipeline**: Coordinates specialized **Mathematician**, **Pedagogue**, **Scene Architect**, and **Socratic Coach** agents.
+### 4. 🧠 5-Layer Socratic Cognitive Architecture
+- **Multi-Agent Pipeline**: Coordinates specialized **Mathematician**, **Pedagogue**, **Scene Architect**, and **Socratic Tutor** agents.
 - **Bayesian Student Model**: A persistent knowledge graph tracking student mastery of math topics based on correct answers, errors, and hesitation.
 - **Comprehension Telemetry**: Tracks mouse micro-hesitations, drags, slide-skipping, and error rate, feeding metric vectors straight to the LLM to classify student confusion.
 
@@ -59,7 +57,6 @@ graph TD
         UI["Minimalist Light UI<br/>(Outfit & Inter Typography)"]:::client
         WebGL["Three.js WebGL Viewport<br/>(3D Axes, Planes, Vectors, Riemann Partitions)"]:::client
         CV["MediaPipe Hand Landmarker<br/>(Real-Time Gestures & Raycasting via Webcam)"]:::client
-        WebAudio["AudioWorklet Audio Pipeline<br/>(Isolated Thread Capture)"]:::client
     end
 
     subgraph Backend ["Hono Server Tier & Middlewares"]
@@ -68,23 +65,21 @@ graph TD
         Logger["Telemetry Analytics Logger<br/>(Micro-Interaction Hesitation Tracker)"]:::server
     end
 
-    subgraph Cognitive ["6-Layer Cognitive Tutoring Engine"]
-        Orchestrator["Multi-Agent Pipeline<br/>(Mathematician, Pedagogue, Scene Architect, Socratic Coach)"]:::cognitive
+    subgraph Cognitive ["5-Layer Cognitive Tutoring Engine"]
+        Orchestrator["Multi-Agent Pipeline<br/>(Mathematician, Pedagogue, Scene Architect, Socratic Tutor)"]:::cognitive
         Bayesian["Bayesian Student Model<br/>(Persistent Mastery Knowledge Graph)"]:::cognitive
         CAS["Deterministic CAS Solver<br/>(Symbolic Derivative, Cramer Algebra, 3D Geometry Solver)"]:::cognitive
         Classifier["Confusion Classifier<br/>(CONFIDENT | HESITANT | CONFUSED)"]:::cognitive
     end
 
-    subgraph LLM ["Cloud Inference & STT APIs"]
+    subgraph LLM ["Cloud Inference APIs"]
         Gemini["Google Gemini 2.5 Flash<br/>(Visual Intent, Lesson Planning, Multimodal)"]:::external
         Llama["Groq Llama 3.3 70B<br/>(High-Speed Socratic Coaching Dialogue)"]:::external
-        Whisper["Groq Whisper Large v3<br/>(recorded Fallback Audio Transcription)"]:::external
     end
 
     %% Connections
     UI -->|JSON / Websocket / SSE| API
     CV -->|Coordinate Scaling| WebGL
-    WebAudio -->|Base64 Streams| API
 
     API --> Cache
     API --> Logger
@@ -97,7 +92,6 @@ graph TD
     Orchestrator --> Llama
     Orchestrator --> Gemini
 
-    API --> Whisper
     API --> Gemini
     API --> Llama
 ```
@@ -110,7 +104,6 @@ graph TD
 - **Node.js 20+**
 - **npm**
 - A standard **Webcam** (for gesture/hand tracking)
-- A **Microphone** (for voice tutor mode)
 
 ### Installation
 1. Clone the repository and navigate to the project directory:
