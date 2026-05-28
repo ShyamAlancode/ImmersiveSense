@@ -33,7 +33,7 @@ import {
 import { mergeRequiredSceneObjects, shouldSyncAnalyticScene } from "./sceneDirectiveSync.js";
 import { resolveDeferredStageAdvance } from "./deferredStageProgression.js";
 import { initUnfoldDrawer, setUnfoldRepresentationMode, syncUnfoldDrawer } from "./unfoldDrawer.js";
-import { hasMathMarkup, renderMathBlockHtml, renderRichTextHtml } from "./mathMarkup.js";
+import { hasMathMarkup, renderMathBlockHtml, renderRichTextHtml, renderMath } from "./mathMarkup.js";
 import { renderAnswerCard, planHasAnswerCard } from "./answerCard.js";
 import { MicrophoneCapture } from "./microphoneCapture.js";
 import { closeEvidence, hideEvidence, initEvidencePanel, registerEvidenceAutoClose, showEvidence } from "./evidencePanel.js";
@@ -43,6 +43,7 @@ import {
   shouldStartLessonFromComposer,
 } from "./tutorConversation.js";
 import { dispatchTTS, cancelTTS as cancelBrowserTTS } from "./voiceController.js";
+import { getContext as getSceneContext, setContext } from "../state/sceneContextStore.js";
 
 let awaitingLearnerResponse = false;
 let lastInputSource = "text";
@@ -426,6 +427,27 @@ function clearTranscript() {
       <p class="chat-welcome-text">Ask a question, talk about the current scene, or say "show me something cool" and I'll build a math visual.</p>
     </div>
   `;
+
+  // Hide post-lesson stats: reset panel to in-lesson state
+  const rightPanel = document.getElementById("rightPanel");
+  if (rightPanel) {
+    rightPanel.classList.remove("panel-post-lesson");
+    rightPanel.classList.add("panel-in-lesson");
+  }
+
+  // Hide cognitive console
+  const cogConsole = document.querySelector("#cognitiveConsole");
+  if (cogConsole) {
+    cogConsole.classList.add("hidden");
+    const allNodes = cogConsole.querySelectorAll(".agent-node");
+    allNodes.forEach(node => {
+      node.classList.remove("thinking");
+      const statusEl = node.querySelector(".agent-status");
+      if (statusEl) statusEl.textContent = "Waiting...";
+    });
+    const logs = cogConsole.querySelectorAll("[id^=agentLog-]");
+    logs.forEach(log => log.textContent = "");
+  }
 }
 
 function setQuestionStatus(text = "", tone = "hidden") {
@@ -1055,6 +1077,10 @@ function completeLesson({ reason = "correct-answer", revealSolution = false } = 
   if (rightPanel) {
     rightPanel.classList.remove("panel-in-lesson");
     rightPanel.classList.add("panel-post-lesson");
+  }
+  const cogConsole = document.querySelector("#cognitiveConsole");
+  if (cogConsole) {
+    cogConsole.classList.remove("hidden");
   }
 }
 
@@ -2182,19 +2208,21 @@ async function handleQuestionSubmit(overrides = {}) {
 }
 
 function sceneContextPayload(plan, assessment) {
-  const selected = selectedObjectContext();
+  const storeContext = getSceneContext() || {};
+  const selected = storeContext.selection || selectedObjectContext();
+
   return {
-    objectCount: currentSnapshot().objects.length,
+    objectCount: storeContext.visibleObjects ? storeContext.visibleObjects.length : currentSnapshot().objects.length,
     selection: selected
       ? {
         id: selected.id,
         label: selected.label,
         shape: selected.shape,
         params: selected.params,
-        metrics: {
-          volume: Number(selected.metrics.volume.toFixed(3)),
-          surfaceArea: Number(selected.metrics.surfaceArea.toFixed(3)),
-        },
+        metrics: selected.metrics ? {
+          volume: Number((selected.metrics.volume || 0).toFixed(3)),
+          surfaceArea: Number((selected.metrics.surfaceArea || 0).toFixed(3)),
+        } : null,
       }
       : null,
     sceneFocus: plan?.sceneFocus || null,
@@ -2207,6 +2235,7 @@ function sceneContextPayload(plan, assessment) {
     formulaVisible: analyticFormulaVisible,
     fullSolutionVisible: analyticFullSolutionVisible,
     lastSceneFeedback,
+    studentAction: storeContext.studentAction || "click"
   };
 }
 
@@ -2511,10 +2540,10 @@ async function sendTutorMessage(messageText, options = {}) {
   let pendingStage = null;
   let pendingLearningStage = null;
 
-  // Show Cognitive Console and activate thinking state
+  // Keep Cognitive Console hidden and activate thinking state
   const cogConsole = document.querySelector("#cognitiveConsole");
   if (cogConsole) {
-    cogConsole.classList.remove("hidden");
+    cogConsole.classList.add("hidden");
     const allNodes = cogConsole.querySelectorAll(".agent-node");
     allNodes.forEach(node => {
       node.classList.add("thinking");
@@ -2553,11 +2582,16 @@ async function sendTutorMessage(messageText, options = {}) {
           updateStudentModelUI(meta.studentModel);
         }
       },
-      onChunk: (chunk) => {
-        streamedText += chunk;
-        accumulatedTutorText += chunk;
-        typing?.classList.remove("loading-dots");
-        setTranscriptMessageText(typing, streamedText, { role: "tutor", completion: false });
+      onChunk: (chunk, stageType, payload) => {
+        if (stageType) {
+          typing?.classList.remove("loading-dots");
+          handleProgressiveStageChunk(typing, chunk, stageType, payload);
+        } else {
+          streamedText += chunk;
+          accumulatedTutorText += chunk;
+          typing?.classList.remove("loading-dots");
+          setTranscriptMessageText(typing, streamedText, { role: "tutor", completion: false });
+        }
       },
       onAssessment: (assessment) => {
         if (assessment?.summary) {
@@ -2599,10 +2633,13 @@ async function sendTutorMessage(messageText, options = {}) {
         if (typing) {
           typing.dataset.completion = response.completionState?.complete ? "true" : "false";
         }
-        setTranscriptMessageText(typing, response.text, {
-          role: "tutor",
-          completion: Boolean(response.completionState?.complete),
-        });
+        const hasAccordion = typing && typing.querySelector('.progressive-accordion');
+        if (!hasAccordion) {
+          setTranscriptMessageText(typing, response.text, {
+            role: "tutor",
+            completion: Boolean(response.completionState?.complete),
+          });
+        }
 
         syncSolutionRevealState(response);
         if (tutorAnnotationManager && response.tutorAnnotations) {
@@ -3641,9 +3678,221 @@ function bindDom() {
   newQuestionBtn = document.getElementById("newQuestionBtn");
 }
 
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
+
+function handleProgressiveStageChunk(container, content, stageType, payload) {
+  const STAGE_TITLES = {
+    1: "Deconstruct",
+    2: "Intuition",
+    3: "Formula Selection",
+    4: "Step-by-Step Calculation",
+    5: "Manipulation Guide",
+    6: "Final Answer"
+  };
+
+  let accordion = container.querySelector(".progressive-accordion");
+  if (!accordion) {
+    accordion = document.createElement("div");
+    accordion.className = "progressive-accordion";
+    container.innerHTML = ""; // Clear the loading dots/prose
+    container.appendChild(accordion);
+  }
+
+  const stageNum = payload.stage;
+  let card = accordion.querySelector(`.stage-card[data-stage="${stageNum}"]`);
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "stage-card";
+    card.setAttribute("data-stage", stageNum);
+
+    // Find the correct position to insert numerically
+    const cards = Array.from(accordion.querySelectorAll(".stage-card"));
+    const insertBeforeCard = cards.find(c => parseInt(c.getAttribute("data-stage"), 10) > stageNum);
+    if (insertBeforeCard) {
+      accordion.insertBefore(card, insertBeforeCard);
+    } else {
+      accordion.appendChild(card);
+    }
+
+    card.innerHTML = `
+      <div class="stage-header">
+        <span class="stage-title">${STAGE_TITLES[stageNum] || stageType}</span>
+        <span class="stage-badge">Stage ${stageNum}/6</span>
+      </div>
+      <div class="stage-body"></div>
+    `;
+
+    const header = card.querySelector(".stage-header");
+    header.addEventListener("click", () => {
+      const isExpanded = card.classList.contains("is-expanded");
+      accordion.querySelectorAll(".stage-card").forEach(c => c.classList.remove("is-expanded"));
+      if (!isExpanded) {
+        card.classList.add("is-expanded");
+      }
+    });
+  }
+
+  // Set the body content based on the stage type
+  const body = card.querySelector(".stage-body");
+  
+  if (stageType === "stage_error") {
+    card.classList.add("stage-card--skipped");
+    const badge = card.querySelector(".stage-badge");
+    if (badge) {
+      badge.textContent = `Stage ${stageNum}/6 (Skipped)`;
+    }
+    body.innerHTML = `<div class="stage-error-alert">Explanation style skipped: ${escapeHtml(content)}</div>`;
+  } else if (stageType === "deconstruct") {
+    if (typeof content === "object" && content !== null) {
+      const knownsEntries = Object.entries(content.knowns || {});
+      const knownsHtml = knownsEntries.length > 0
+        ? `<div class="deconstruct-section">
+             <strong>Knowns:</strong>
+             <div class="deconstruct-grid">
+               ${knownsEntries.map(([k, v]) => `
+                 <div class="grid-item label">${escapeHtml(k)}</div>
+                 <div class="grid-item value">${escapeHtml(v)}</div>
+               `).join("")}
+             </div>
+           </div>`
+        : "";
+
+      body.innerHTML = `
+        <div class="deconstruct-container">
+          <div class="deconstruct-section">
+            <strong>Problem Type:</strong> ${escapeHtml(content.problemType || "Math Problem")} (${escapeHtml(content.domain || "general")})
+          </div>
+          ${knownsHtml}
+          <div class="deconstruct-section">
+            <strong>Goal:</strong> ${escapeHtml(content.unknown || "unknown")}
+          </div>
+          ${content.commonMistake ? `
+          <div class="deconstruct-section warning">
+            <strong>Common Pitfall:</strong> ${escapeHtml(content.commonMistake)}
+          </div>` : ""}
+        </div>
+      `;
+    } else {
+      body.innerHTML = renderRichTextHtml(content);
+    }
+  } else if (stageType === "intuition") {
+    body.innerHTML = renderRichTextHtml(content);
+  } else if (stageType === "formula") {
+    // Process LaTeX in formula stage
+    if (typeof content === "string") {
+      const parts = content.split("$$");
+      let html = "";
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 1) {
+          const formula = parts[i].trim();
+          html += `<div class="formula-card-latex">${renderMath(formula, { displayMode: true })}</div>`;
+        } else {
+          html += renderRichTextHtml(parts[i]);
+        }
+      }
+      body.innerHTML = html;
+    } else {
+      body.innerHTML = renderRichTextHtml(content);
+    }
+  } else if (stageType === "steps") {
+    if (Array.isArray(content)) {
+      let stepsHtml = `<div class="steps-list">`;
+      content.forEach((step) => {
+        const stepNum = step.stepNumber || step.step || "?";
+        const action = step.action || "";
+        const expression = step.expression || "";
+        const result = step.result || "";
+        const explanation = step.explanation || "";
+        const sceneAction = step.sceneAction || step.action;
+        const sceneTarget = step.sceneTarget || step.target;
+
+        let exprHtml = expression ? `<div class="step-expression">${renderMath(expression, { displayMode: true })}</div>` : "";
+        let resultHtml = result ? `<div class="step-result"><strong>Result:</strong> ${renderMath(result, { displayMode: false })}</div>` : "";
+
+        let show3dButton = "";
+        if (sceneAction && sceneTarget) {
+          show3dButton = `<button class="tutor-btn highlight-3d-btn" data-target="${escapeHtml(sceneTarget)}" data-action="${escapeHtml(sceneAction)}">Show in 3D</button>`;
+        }
+
+        stepsHtml += `
+          <div class="step-item">
+            <div class="step-item-header">
+              <span class="step-number-badge">${stepNum}</span>
+              <span class="step-action-title">${escapeHtml(action)}</span>
+            </div>
+            <div class="step-item-body">
+              <p class="step-explanation">${escapeHtml(explanation)}</p>
+              ${exprHtml}
+              ${resultHtml}
+              ${show3dButton}
+            </div>
+          </div>
+        `;
+      });
+      stepsHtml += `</div>`;
+      body.innerHTML = stepsHtml;
+
+      // Bind click handlers to Show in 3D buttons
+      body.querySelectorAll(".highlight-3d-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const target = btn.getAttribute("data-target");
+          const action = btn.getAttribute("data-action") || "pulse";
+          if (world && typeof world.highlightObject === "function") {
+            world.highlightObject(target, action);
+          }
+        });
+      });
+    } else {
+      body.innerHTML = renderRichTextHtml(content);
+    }
+  } else {
+    body.innerHTML = renderRichTextHtml(content);
+  }
+
+  // Expand this card, collapse all other cards
+  accordion.querySelectorAll(".stage-card").forEach(c => {
+    if (c === card) {
+      c.classList.add("is-expanded");
+    } else {
+      c.classList.remove("is-expanded");
+    }
+  });
+
+  // Ensure scroll is visible
+  container.scrollTop = container.scrollHeight;
+}
+
 export function initTutorController(context) {
   world = context.world;
   sceneApi = context.sceneApi;
+
+  if (world.controls) {
+    const debouncedOnControlsChange = debounce(() => {
+      const snap = sceneApi ? sceneApi.snapshot() : { objects: [] };
+      const selectionId = sceneApi ? sceneApi.getSelection() : null;
+      const selected = selectionId ? snap.objects.find(obj => obj.id === selectionId) : null;
+      setContext({
+        currentSceneSpec: snap,
+        visibleObjects: snap.objects,
+        studentAction: "manipulate",
+        selection: selected
+      });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("sceneContextUpdate", {
+          detail: { action: "manipulate" }
+        }));
+      }
+    }, 250);
+    world.controls.addEventListener("change", debouncedOnControlsChange);
+  }
+
   cameraDirector = new CameraDirector(world.camera, world.controls);
   tutorAnnotationManager = new TutorAnnotationManager(world, sceneApi);
   analyticOverlayManager = new AnalyticOverlayManager(world, sceneApi);

@@ -200,39 +200,73 @@ export async function askTutor({
   let fullText = "";
   let latestAssessment = null;
   let latestMeta = null;
+  let currentEvent = null;
+
+  const flushEvent = async (dataStr) => {
+    try {
+      const payload = JSON.parse(dataStr);
+      if (currentEvent === "tutorStage") {
+        await onChunk?.(payload.content, payload.type, payload);
+      } else {
+        if (payload.type === "text" && payload.content) {
+          fullText += payload.content;
+          onChunk?.(payload.content);
+        }
+        if (payload.type === "meta" && payload.content) {
+          latestMeta = payload.content;
+          await onMeta?.(latestMeta);
+        }
+        if (payload.type === "assessment" && payload.content) {
+          latestAssessment = payload.content;
+          await onAssessment?.(latestAssessment);
+        }
+        if (payload.type === "done") {
+          await onDone?.({
+            text: fullText,
+            assessment: latestAssessment,
+            meta: latestMeta,
+            done: payload,
+          });
+        }
+        if (payload.type === "error") {
+          throw new Error(payload.content || "Tutor stream error");
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to parse SSE payload:", e);
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n");
-    buffer = parts.pop();
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
 
-    for (const part of parts) {
-      if (!part.startsWith("data: ")) continue;
-      const payload = JSON.parse(part.slice(6));
-      if (payload.type === "text" && payload.content) {
-        fullText += payload.content;
-        onChunk?.(payload.content);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim();
+        continue;
       }
-      if (payload.type === "meta" && payload.content) {
-        latestMeta = payload.content;
-        await onMeta?.(latestMeta);
+      if (line.startsWith("data:")) {
+        const dataStr = line.slice(5).trim();
+        await flushEvent(dataStr);
+        currentEvent = null;
       }
-      if (payload.type === "assessment" && payload.content) {
-        latestAssessment = payload.content;
-        await onAssessment?.(latestAssessment);
-      }
-      if (payload.type === "done") {
-        await onDone?.({
-          text: fullText,
-          assessment: latestAssessment,
-          meta: latestMeta,
-          done: payload,
-        });
-      }
-      if (payload.type === "error") {
-        throw new Error(payload.content || "Tutor stream error");
+    }
+  }
+
+  if (buffer.trim()) {
+    const lines = buffer.split(/\r?\n/);
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        const dataStr = line.slice(5).trim();
+        await flushEvent(dataStr);
+        currentEvent = null;
       }
     }
   }

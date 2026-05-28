@@ -64,6 +64,7 @@ export function getOrCreateStudentModel(sessionId = "default") {
       learnerLevel: "intermediate",
       graph,
       misconceptions: [], // Array of active misconceptions
+      confusedStages: [], // Array of confused stages
       createdAt: Date.now(),
       updatedAt: Date.now()
     };
@@ -166,6 +167,25 @@ export function clearStudentMisconception(sessionId, misconceptionTag) {
   const index = model.misconceptions.indexOf(misconceptionTag);
   if (index >= 0) {
     model.misconceptions.splice(index, 1);
+    model.updatedAt = Date.now();
+    saveModels();
+  }
+  return model;
+}
+
+/**
+ * Record a confused stage.
+ * @param {string} sessionId
+ * @param {string} stage
+ */
+export function recordConfusedStage(sessionId, stage) {
+  if (!stage) return null;
+  const model = getOrCreateStudentModel(sessionId);
+  if (!model.confusedStages) {
+    model.confusedStages = [];
+  }
+  if (!model.confusedStages.includes(stage)) {
+    model.confusedStages.push(stage);
     model.updatedAt = Date.now();
     saveModels();
   }

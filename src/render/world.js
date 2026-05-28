@@ -433,6 +433,68 @@ export function createWorld(container) {
     renderer.render(scene, camera);
   }
 
+  function highlightObject(targetIdOrLabel, action = "pulse") {
+    if (!targetIdOrLabel) return;
+    const targetClean = String(targetIdOrLabel).trim().toLowerCase();
+    
+    let foundMesh = null;
+    scene.traverse((child) => {
+      if (child.isMesh && child.userData) {
+        const id = String(child.userData.sceneObjectId || "").trim().toLowerCase();
+        const label = String(child.userData.label || "").trim().toLowerCase();
+        if (id === targetClean || label === targetClean) {
+          foundMesh = child;
+        }
+      }
+    });
+
+    if (!foundMesh) {
+      console.warn(`[Highlight] Object not found for target identifier: ${targetIdOrLabel}`);
+      return;
+    }
+    
+    const originalScale = foundMesh.scale.clone();
+    const originalEmissive = foundMesh.material && foundMesh.material.emissive
+      ? foundMesh.material.emissive.clone()
+      : null;
+    const originalEmissiveIntensity = foundMesh.material && foundMesh.material.emissiveIntensity !== undefined
+      ? foundMesh.material.emissiveIntensity
+      : 0;
+
+    let startTime = null;
+    const duration = 1200; // 1.2 seconds pulse
+
+    function pulse(timestamp) {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      const wave = Math.sin(progress * Math.PI * 4); // 2 full pulses
+      const scaleFactor = 1 + wave * 0.12; // max +12% scale
+
+      foundMesh.scale.copy(originalScale).multiplyScalar(scaleFactor);
+
+      if (foundMesh.material) {
+        if (foundMesh.material.emissive) {
+          foundMesh.material.emissive.setHex(0xffaa00);
+          foundMesh.material.emissiveIntensity = originalEmissiveIntensity + wave * 2.0;
+        }
+      }
+
+      if (progress < 1) {
+        requestAnimationFrame(pulse);
+      } else {
+        foundMesh.scale.copy(originalScale);
+        if (foundMesh.material) {
+          if (originalEmissive) foundMesh.material.emissive.copy(originalEmissive);
+          foundMesh.material.emissiveIntensity = originalEmissiveIntensity;
+        }
+      }
+    }
+
+    requestAnimationFrame(pulse);
+  }
+
   window.addEventListener("resize", resize);
   resize();
   animate();
@@ -458,5 +520,6 @@ export function createWorld(container) {
     setControlsEnabled,
     setNavigationMode,
     resetView,
+    highlightObject,
   };
 }

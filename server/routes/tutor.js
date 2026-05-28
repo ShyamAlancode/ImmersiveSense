@@ -747,26 +747,56 @@ ${instruction}`.trim();
       }
 
       if (!plan) {
-        let freeformTurn;
-        try {
-          freeformTurn = await freeformTurnGenerator({
-            sceneSnapshot,
-            sceneContext,
-            learningState,
-            userMessage,
-          });
-        } catch (error) {
-          console.error("Tutor freeform error:", error);
-          freeformTurn = buildFallbackFreeformTurn({
-            sceneSnapshot,
-            sceneContext,
-            userMessage,
-          });
-        }
-
         return streamSSE(c, async (stream) => {
-          await stream.writeSSE({ data: JSON.stringify({ type: "meta", content: freeformTurn.meta || null }) });
-          await stream.writeSSE({ data: JSON.stringify({ type: "text", content: freeformTurn.text || "I am here. Ask me about the scene or tell me what to build." }) });
+          let freeformTurn;
+          try {
+            freeformTurn = await freeformTurnGenerator({
+              sceneSnapshot,
+              sceneContext,
+              learningState,
+              userMessage,
+              sessionId,
+              confusionMetrics,
+              writeChunk: async (chunk) => {
+                await stream.writeSSE({
+                  event: "tutorStage",
+                  data: JSON.stringify(chunk)
+                });
+              }
+            });
+          } catch (error) {
+            console.error("Tutor freeform error:", error);
+            freeformTurn = buildFallbackFreeformTurn({
+              sceneSnapshot,
+              sceneContext,
+              userMessage,
+            });
+            await stream.writeSSE({
+              event: "tutorStage",
+              data: JSON.stringify({
+                type: "stage_error",
+                stage: -1,
+                content: error.message || "Failed to process turn",
+                sceneActions: [],
+                isComplete: true
+              })
+            });
+            await stream.writeSSE({
+              event: "tutorStage",
+              data: JSON.stringify({
+                type: "answer",
+                stage: 6,
+                content: freeformTurn.text,
+                sceneActions: [],
+                isComplete: true
+              })
+            });
+          }
+
+          if (freeformTurn) {
+            await stream.writeSSE({ data: JSON.stringify({ type: "meta", content: freeformTurn.meta || null }) });
+            await stream.writeSSE({ data: JSON.stringify({ type: "text", content: freeformTurn.text || "I am here. Ask me about the scene or tell me what to build." }) });
+          }
           await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
         });
       }

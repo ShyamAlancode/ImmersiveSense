@@ -176,3 +176,7 @@ export function renderMathBlockHtml(content = "", { displayMode = true } = {}) {
   if (!normalized) return "";
   return renderMathHtml(normalized, { displayMode });
 }
+
+export function renderMath(content = "", options = {}) {
+  return renderMathBlockHtml(content, options);
+}

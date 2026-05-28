@@ -6,6 +6,7 @@ import {
   normalizeSceneSnapshot,
   sceneObjectToLegacyItem,
 } from "./schema.js";
+import { setContext } from "../state/sceneContextStore.js";
 
 let firstObjectEmitted = false;
 
@@ -25,6 +26,25 @@ export function createSceneRuntime({ world }) {
   const meshById = new Map();
   let nextSerial = 0;
   let nextGeneratedId = 0;
+
+  function updateSceneContextStore(action = "click") {
+    const currentSnap = snapshot();
+    const selectionId = store.state.selectedObjectId;
+    const selected = selectionId ? currentSnap.objects.find(obj => obj.id === selectionId) : null;
+    
+    setContext({
+      currentSceneSpec: currentSnap,
+      visibleObjects: currentSnap.objects,
+      studentAction: action,
+      selection: selected
+    });
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("sceneContextUpdate", {
+        detail: { action }
+      }));
+    }
+  }
 
   function ensureMeshIdentity(mesh, objectSpec = {}) {
     if (!mesh.userData.objectSerial) {
@@ -79,6 +99,7 @@ export function createSceneRuntime({ world }) {
     if (options.select) {
       setSelection(mesh);
     }
+    updateSceneContextStore("add");
     return mesh;
   }
 
@@ -96,6 +117,7 @@ export function createSceneRuntime({ world }) {
     if (id) {
       store.removeObject(id, reason);
     }
+    updateSceneContextStore("remove");
   }
 
   function clear(reason = "clear") {
@@ -107,6 +129,7 @@ export function createSceneRuntime({ world }) {
     }
     store.replaceObjects([], reason);
     store.setSelection(null);
+    updateSceneContextStore("clear");
   }
 
   function snapshot() {
@@ -148,9 +171,11 @@ export function createSceneRuntime({ world }) {
   function notifySceneChanged(reason = "touch", mesh = null) {
     if (mesh) {
       registerMesh(mesh, sceneObjectFromMesh(mesh), reason);
+      updateSceneContextStore(reason);
       return;
     }
     store.replaceObjects(snapshot().objects, reason);
+    updateSceneContextStore(reason);
   }
 
   function setSelection(target) {
@@ -158,6 +183,7 @@ export function createSceneRuntime({ world }) {
       ? target
       : (target?.userData?.sceneObjectId || null);
     store.setSelection(id);
+    updateSceneContextStore("select");
   }
 
   function getMesh(target) {

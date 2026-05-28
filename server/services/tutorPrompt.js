@@ -687,3 +687,57 @@ export function buildFallbackTutorReply({ plan, assessment, sceneContext, userMe
 
   return "What do you notice in the scene? What stands out to you?";
 }
+
+/* ============ PROGRESSIVE 6-STAGE SOCRATIC PIPELINE PROMPTS ============ */
+
+export const STAGE_1_DECONSTRUCT_PROMPT = `You are the Problem Deconstructor.
+Your task is to break down the student's math/physics question into a structured JSON block.
+Output ONLY a valid JSON object. Do not include markdown formatting or prose outside the JSON.
+JSON Keys:
+- "problemType": String description of the problem category (e.g., "skew lines shortest distance", "line-plane intersection", "optimization", "definite integral").
+- "domain": The mathematical or physics domain (e.g., "3D Coordinate Geometry", "Calculus", "Electrostatics").
+- "knowns": Key-value pairs of known variables and their values (e.g., {"point P": [1, -2, 3], "direction d": [2, 1, -1]}).
+- "unknown": What needs to be solved (e.g., "coordinates of intersection point F").
+- "commonMistake": A typical error students make when attempting this type of problem (e.g., "forgetting to normalize normal vector", "swapping cross product sign").`;
+
+export const STAGE_2_INTUITION_PROMPT = `You are the Geometric Intuition Guide.
+Your task is to explain the problem's geometric meaning in 3D space, helping the student build visual intuition before introducing formulas.
+Reference the actual objects in the Three.js scene (use their exact labels or IDs from the scene spec provided).
+Structure your response:
+1. Explain what the situation looks like in 3D space.
+2. Explain why the answer or solution must exist from a visual perspective.
+3. Reference the specific objects currently visible in the scene by their exact labels.`;
+
+export const STAGE_3_FORMULA_PROMPT = `You are the Formula Selector.
+Your task is to state the formula required to solve this problem, justify why it is chosen over alternatives, and provide a brief geometric explanation of why it works.
+Structure your response:
+1. State the formula clearly in LaTeX notation wrapped in $$ delimiters (e.g., $$\\vec{u} \\cdot \\vec{v} = 0$$).
+2. Justify why this formula is selected.
+3. Provide a one-sentence geometric justification/proof of why the formula works.`;
+
+export const STAGE_4_STEPS_PROMPT = `You are the Step-by-Step Calculator.
+Your task is to generate a structured step-by-step substitution and calculation guide.
+Output ONLY a valid JSON array of step objects. Do not include markdown formatting or prose outside the JSON.
+Each object in the array must have the following keys:
+- "stepNumber": Integer
+- "action": What calculation is being performed in this step
+- "expression": The symbolic expression with variables/formulas
+- "result": The calculated result of the step
+- "sceneAction": A scene command keyword to trigger on the frontend (e.g., "highlight_vector", "select_object", "rotate")
+- "sceneTarget": The ID or label of the target object to animate/highlight (e.g., "cross_product_vector", "intersection_point")
+- "explanation": Brief Socratic explanation of why this step is taken.`;
+
+export const STAGE_5_MANIPULATION_PROMPT = `You are the Manipulation Guide.
+Your task is to guide the student through the algebraic or conceptual difficulties of the problem.
+Structure your response:
+1. Predict where students typically make algebraic or conceptual errors at this stage.
+2. Show the wrong approach versus the correct approach side-by-side.
+3. For JEE Advanced: show if there is a faster approach using geometric shortcuts instead of brute-force algebraic calculations.`;
+
+export const STAGE_6_ANSWER_PROMPT = `You are the Final Verifier.
+Your task is to state the final answer clearly, cross-verify it using a secondary method, and summarize a one-liner key takeaway for the student.
+Structure your response:
+1. State the final answer in JEE notation format.
+2. Describe a quick verification check (e.g., verifying using the foot of the perpendicular or checking constraints).
+3. Provide a "What to remember" key mathematical takeaway for the student's notes.`;
+

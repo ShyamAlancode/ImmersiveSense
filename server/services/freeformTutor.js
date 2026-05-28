@@ -6,6 +6,19 @@ import { buildElectricFieldPlan } from "./plan/electricField.js";
 import { cleanupJson } from "./plan/shared.js";
 import { converseWithModelFailover } from "./modelInvoker.js";
 import { hasCredentials } from "./modelRouter.js";
+import {
+  STAGE_1_DECONSTRUCT_PROMPT,
+  STAGE_2_INTUITION_PROMPT,
+  STAGE_3_FORMULA_PROMPT,
+  STAGE_4_STEPS_PROMPT,
+  STAGE_5_MANIPULATION_PROMPT,
+  STAGE_6_ANSWER_PROMPT
+} from "./tutorPrompt.js";
+import {
+  getOrCreateStudentModel,
+  recordConfusedStage
+} from "./pedagogy/studentModel.js";
+import { classifyConfusion } from "./pedagogy/confusionClassifier.js";
 
 const FREEFORM_TUTOR_SYSTEM_PROMPT = `You are ImmersiveSense, a scene-aware chat companion inside a 3D spatial sandbox.
 
@@ -591,27 +604,39 @@ function buildModelMessages(sceneSnapshot = {}, sceneContext = {}, learningState
   return messages;
 }
 
-async function modelFreeformTurn(sceneSnapshot = {}, sceneContext = {}, learningState = {}, userMessage = "") {
+async function generateSceneCommand(sceneSnapshot, sceneContext, learningState, userMessage) {
   if (!hasCredentials()) return null;
 
-  const text = await converseWithModelFailover(
-    "text",
-    FREEFORM_TUTOR_SYSTEM_PROMPT,
-    buildModelMessages(sceneSnapshot, sceneContext, learningState, userMessage),
-    {
-      maxTokens: 1400,
-      temperature: 0.35,
-      modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "gemini-2.5-flash"],
-    }
-  );
+  try {
+    const text = await converseWithModelFailover(
+      "text",
+      FREEFORM_TUTOR_SYSTEM_PROMPT,
+      buildModelMessages(sceneSnapshot, sceneContext, learningState, userMessage),
+      {
+        maxTokens: 1000,
+        temperature: 0.2,
+        modelIds: ["gemini-2.5-flash", "llama-3.3-70b-versatile"],
+      }
+    );
+    const parsed = JSON.parse(cleanupJson(text));
+    return parsed.sceneCommand ? normalizeSceneCommand(parsed.sceneCommand) : null;
+  } catch (error) {
+    console.warn("Failed to generate scene command:", error);
+    return null;
+  }
+}
 
-  const parsed = JSON.parse(cleanupJson(text));
-  return {
-    text: String(parsed.reply || "").trim(),
-    sceneCommand: shouldAskModelForSceneCommand(userMessage)
-      ? normalizeSceneCommand(parsed.sceneCommand)
-      : null,
-  };
+async function executeStageWithRetry(stageName, runStageFn) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await runStageFn();
+    } catch (err) {
+      lastError = err;
+      console.warn(`[Failover] Stage ${stageName} failed on attempt ${attempt + 1}: ${err.message}`);
+    }
+  }
+  throw lastError;
 }
 
 export function buildFallbackFreeformTurn({
@@ -632,23 +657,250 @@ export async function generateFreeformTutorTurn({
   sceneContext = null,
   learningState = {},
   userMessage,
+  sessionId = "default",
+  confusionMetrics = {},
+  writeChunk = null,
 }) {
   const normalizedSnapshot = normalizeSceneSnapshot(sceneSnapshot);
   const heuristicTurn = heuristicSceneCommand(userMessage, normalizedSnapshot, sceneContext || {}, learningState);
 
   if (heuristicTurn) {
+    const meta = buildFreeformResponseMeta(normalizedSnapshot, heuristicTurn.sceneCommand);
+    if (writeChunk) {
+      await writeChunk({
+        type: "answer",
+        stage: 6,
+        content: heuristicTurn.text,
+        sceneActions: [],
+        isComplete: true
+      });
+    }
     return {
       text: heuristicTurn.text,
-      meta: buildFreeformResponseMeta(normalizedSnapshot, heuristicTurn.sceneCommand),
+      meta,
     };
   }
 
+  if (!hasCredentials()) {
+    return buildFallbackFreeformTurn({
+      sceneSnapshot: normalizedSnapshot,
+      sceneContext,
+      userMessage,
+    });
+  }
+
   try {
-    const turn = await modelFreeformTurn(normalizedSnapshot, sceneContext || {}, learningState, userMessage);
-    const text = turn?.text || freeformFallbackReply(normalizedSnapshot, sceneContext || {}, userMessage, turn?.sceneCommand || null);
+    const confusionClass = classifyConfusion(confusionMetrics || {});
+    const studentModel = getOrCreateStudentModel(sessionId);
+    const isConfused = confusionClass.state === "CONFUSED" || (studentModel.confusedStages && studentModel.confusedStages.length > 0);
+    const isHesitant = confusionClass.state === "HESITANT";
+
+    if (confusionClass.state === "CONFUSED") {
+      const stageToRecord = confusionMetrics.stage || learningState.stage || learningState.currentStage || "formula";
+      recordConfusedStage(sessionId, stageToRecord);
+    }
+
+    // 1. Generate scene command if needed
+    let sceneCommand = null;
+    const isSceneQuery = shouldAskModelForSceneCommand(userMessage) || 
+      /find|solve|calculate|intersection|distance|angle|line|plane|vector|sphere|cylinder|cone|pyramid|cube|cuboid/i.test(userMessage);
+    
+    if (isSceneQuery) {
+      sceneCommand = await generateSceneCommand(normalizedSnapshot, sceneContext || {}, learningState, userMessage);
+    }
+
+    // 2. Project scene command if one was generated
+    let finalSceneSnapshot = normalizedSnapshot;
+    if (sceneCommand) {
+      finalSceneSnapshot = projectSceneSnapshot(normalizedSnapshot, sceneCommand);
+    }
+
+    // 3. Define the stages
+    const stages = [
+      {
+        num: 1,
+        name: "deconstruct",
+        model: "groq",
+        prompt: STAGE_1_DECONSTRUCT_PROMPT,
+        modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+        temperature: 0.1
+      },
+      {
+        num: 2,
+        name: "intuition",
+        model: "gemini",
+        prompt: STAGE_2_INTUITION_PROMPT,
+        modelIds: ["gemini-2.5-flash"],
+        temperature: 0.3
+      },
+      {
+        num: 3,
+        name: "formula",
+        model: "groq",
+        prompt: STAGE_3_FORMULA_PROMPT,
+        modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+        temperature: 0.2
+      },
+      {
+        num: 4,
+        name: "steps",
+        model: "gemini",
+        prompt: STAGE_4_STEPS_PROMPT,
+        modelIds: ["gemini-2.5-flash"],
+        temperature: 0.1
+      },
+      {
+        num: 5,
+        name: "manipulation",
+        model: "gemini",
+        prompt: STAGE_5_MANIPULATION_PROMPT,
+        modelIds: ["gemini-2.5-flash"],
+        temperature: 0.3
+      },
+      {
+        num: 6,
+        name: "answer",
+        model: "groq",
+        prompt: STAGE_6_ANSWER_PROMPT,
+        modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+        temperature: 0.1
+      }
+    ];
+
+    // Swap Stage 3 and Stage 4 if the learner is CONFUSED
+    if (isConfused) {
+      const s3Idx = stages.findIndex(s => s.num === 3);
+      const s4Idx = stages.findIndex(s => s.num === 4);
+      if (s3Idx !== -1 && s4Idx !== -1) {
+        const temp = stages[s3Idx];
+        stages[s3Idx] = stages[s4Idx];
+        stages[s4Idx] = temp;
+      }
+    }
+
+    // Modifiers
+    let stepsPromptModifier = "";
+    if (isHesitant) {
+      stepsPromptModifier = "\nCRITICAL: The student is HESITANT. Break the calculations down into more detailed, granular intermediate steps so they don't feel overwhelmed.";
+    }
+
+    let stage4Modifier = "";
+    if (isConfused) {
+      stage4Modifier = "\nCRITICAL: The student is CONFUSED. Explain using a concrete numerical example first, rather than abstract formulas. Keep math steps extremely clear.";
+    }
+
+    let generalModifier = "";
+    if (studentModel.confusedStages && studentModel.confusedStages.length > 0) {
+      generalModifier = `\nNote: The student has previously struggled with these stages: ${studentModel.confusedStages.join(", ")}. Avoid overly complex mathematical jargon, proceed with high pedagogical care, and do not repeat abstract explanations that might have failed before.`;
+    }
+
+    const stageOutputs = {};
+    
+    // 4. Run stages sequentially
+    for (const stage of stages) {
+      try {
+        const systemPrompt = stage.prompt + 
+          (stage.num === 4 ? (stepsPromptModifier + stage4Modifier) : "") + 
+          generalModifier;
+
+        const messageContent = [
+          `User request: ${userMessage}`,
+          "",
+          summarizeScene(finalSceneSnapshot, sceneContext || {}),
+          "",
+          `Scene focus: ${sceneContext?.sceneFocus?.primaryInsight || "none"}.`,
+          `Current guidance: ${sceneContext?.guidance?.coachFeedback || "none"}.`,
+        ];
+
+        if (sceneCommand) {
+          messageContent.push(`Proposed 3D Scene Command: ${JSON.stringify(sceneCommand)}`);
+        }
+
+        // Add prior stage results for context awareness
+        for (const prevStage of stages) {
+          if (stageOutputs[prevStage.name]) {
+            messageContent.push(`[Prior Stage Result - ${prevStage.name.toUpperCase()} (Stage ${prevStage.num})]:\n${typeof stageOutputs[prevStage.name] === "string" ? stageOutputs[prevStage.name] : JSON.stringify(stageOutputs[prevStage.name])}`);
+          }
+        }
+
+        const messages = [
+          {
+            role: "user",
+            content: messageContent.join("\n")
+          }
+        ];
+
+        const text = await executeStageWithRetry(stage.name, async () => {
+          return await converseWithModelFailover(
+            "text",
+            systemPrompt,
+            messages,
+            {
+              maxTokens: 1000,
+              temperature: stage.temperature,
+              modelIds: stage.modelIds
+            }
+          );
+        });
+
+        let parsedContent = text;
+        if (stage.name === "deconstruct" || stage.name === "steps") {
+          try {
+            parsedContent = JSON.parse(cleanupJson(text));
+          } catch (err) {
+            console.warn(`Failed to parse JSON for stage ${stage.name}, using raw text:`, err);
+            parsedContent = stage.name === "deconstruct" ? {
+              problemType: "unknown",
+              domain: "mathematics",
+              knowns: {},
+              unknown: "unknown",
+              commonMistake: "arithmetic"
+            } : [];
+          }
+        }
+
+        let sceneActions = [];
+        if (stage.name === "steps" && Array.isArray(parsedContent)) {
+          sceneActions = parsedContent
+            .map(step => ({
+              action: step.sceneAction || step.action,
+              target: step.sceneTarget || step.target
+            }))
+            .filter(a => a.action && a.target);
+        }
+
+        stageOutputs[stage.name] = parsedContent;
+
+        if (writeChunk) {
+          await writeChunk({
+            type: stage.name,
+            stage: stage.num,
+            content: parsedContent,
+            sceneActions: sceneActions,
+            isComplete: true
+          });
+        }
+      } catch (error) {
+        console.error(`Skipping stage ${stage.name} (Stage ${stage.num}) due to failure:`, error);
+        if (writeChunk) {
+          await writeChunk({
+            type: "stage_error",
+            stage: stage.num,
+            content: stage.name,
+            sceneActions: [],
+            isComplete: true
+          });
+        }
+      }
+    }
+
+    const finalReply = stageOutputs["answer"] || stageOutputs["manipulation"] || stageOutputs["steps"] || stageOutputs["formula"] || stageOutputs["intuition"] || freeformFallbackReply(finalSceneSnapshot, sceneContext || {}, userMessage, sceneCommand);
+    const textResult = typeof finalReply === "string" ? finalReply : JSON.stringify(finalReply);
+    const meta = buildFreeformResponseMeta(normalizedSnapshot, sceneCommand);
+
     return {
-      text,
-      meta: buildFreeformResponseMeta(normalizedSnapshot, turn?.sceneCommand || null),
+      text: textResult,
+      meta,
     };
   } catch (error) {
     console.warn("Freeform tutor fallback:", error?.message || error);
