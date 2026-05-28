@@ -5,6 +5,7 @@
 [![MediaPipe](https://img.shields.io/badge/mediapipe-hand--tracking-cyan.svg)](https://google.github.io/mediapipe/)
 [![Hono](https://img.shields.io/badge/hono-API%20framework-orange.svg)](https://hono.dev)
 [![API Providers](https://img.shields.io/badge/hybrid--models-Gemini%20%2B%20Groq-purple.svg)](#architecture)
+[![Live Demo](https://img.shields.io/badge/live%20demo-online-brightgreen?style=for-the-badge&logo=render)](https://immersivesense.onrender.com/)
 
 **ImmersiveSense** is a state-of-the-art, interactive 3D Socratic math and physics tutor. It transforms abstract mathematical formulas, complex coordinate geometry, and physics vector fields into real-time, interactive 3D visual environments. 
 
