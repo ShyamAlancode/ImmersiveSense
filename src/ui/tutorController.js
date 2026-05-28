@@ -2137,6 +2137,15 @@ async function handleQuestionSubmit(overrides = {}) {
   if (questionSubmit) questionSubmit.disabled = true;
   setQuestionStatus("Building a staged lesson from your prompt and scene...", "loading");
 
+  // Immediately clear the transcript and add the user's question,
+  // showing a premium loading indicator in the visible chat log.
+  clearTranscript();
+  if (questionText) {
+    addTranscriptMessage("user", questionText);
+  }
+  const loadingMsg = addTranscriptMessage("tutor", "...");
+  loadingMsg?.classList.add("loading-dots");
+
   try {
     const uploadImageFile = imageFile
       ? await prepareQuestionImageForUpload(imageFile)
@@ -2163,6 +2172,10 @@ async function handleQuestionSubmit(overrides = {}) {
     console.error("Plan request failed:", error);
     tutorState.setError(error.message);
     setQuestionStatus(`Error: ${error.message}`, "error");
+    if (loadingMsg) {
+      loadingMsg.classList.remove("loading-dots");
+      setTranscriptMessageText(loadingMsg, `Sorry, I encountered an error while building the 3D scene: ${error.message}`, { role: "tutor" });
+    }
   } finally {
     if (questionSubmit) questionSubmit.disabled = false;
   }
