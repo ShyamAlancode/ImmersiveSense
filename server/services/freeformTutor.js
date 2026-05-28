@@ -6,6 +6,7 @@ import { buildElectricFieldPlan } from "./plan/electricField.js";
 import { cleanupJson } from "./plan/shared.js";
 import { converseWithModelFailover } from "./modelInvoker.js";
 import { hasCredentials } from "./modelRouter.js";
+import { USE_PROGRESSIVE_STAGES } from "../config.js";
 import {
   STAGE_1_DECONSTRUCT_PROMPT,
   STAGE_2_INTUITION_PROMPT,
@@ -639,6 +640,167 @@ async function executeStageWithRetry(stageName, runStageFn) {
   throw lastError;
 }
 
+/**
+ * Runs the full 6‑stage progressive tutoring pipeline.
+ * This is extracted from the original generateFreeformTutorTurn implementation.
+ * All logic is unchanged – just moved into a helper for clarity.
+ */
+async function runProgressiveStagePipeline({
+  normalizedSnapshot,
+  sceneCommand,
+  finalSceneSnapshot,
+  sceneContext,
+  learningState,
+  userMessage,
+  sessionId,
+  confusionMetrics,
+  writeChunk,
+}) {
+  // 3. Define the stages (unchanged)
+  const stages = [
+    {
+      num: 1,
+      name: "deconstruct",
+      model: "groq",
+      prompt: STAGE_1_DECONSTRUCT_PROMPT,
+      modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+      temperature: 0.1,
+    },
+    {
+      num: 2,
+      name: "intuition",
+      model: "gemini",
+      prompt: STAGE_2_INTUITION_PROMPT,
+      modelIds: ["gemini-2.5-flash"],
+      temperature: 0.3,
+    },
+    {
+      num: 3,
+      name: "formula",
+      model: "groq",
+      prompt: STAGE_3_FORMULA_PROMPT,
+      modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+      temperature: 0.2,
+    },
+    {
+      num: 4,
+      name: "steps",
+      model: "gemini",
+      prompt: STAGE_4_STEPS_PROMPT,
+      modelIds: ["gemini-2.5-flash"],
+      temperature: 0.1,
+    },
+    {
+      num: 5,
+      name: "manipulation",
+      model: "gemini",
+      prompt: STAGE_5_MANIPULATION_PROMPT,
+      modelIds: ["gemini-2.5-flash"],
+      temperature: 0.3,
+    },
+    {
+      num: 6,
+      name: "answer",
+      model: "groq",
+      prompt: STAGE_6_ANSWER_PROMPT,
+      modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+      temperature: 0.1,
+    },
+  ];
+
+  // Swap Stage 3 and Stage 4 if the learner is CONFUSED
+  const isConfused = confusionMetrics.state === "CONFUSED" || (learningState.confusedStages && learningState.confusedStages.length > 0);
+  if (isConfused) {
+    const s3Idx = stages.findIndex(s => s.num === 3);
+    const s4Idx = stages.findIndex(s => s.num === 4);
+    if (s3Idx !== -1 && s4Idx !== -1) {
+      const temp = stages[s3Idx];
+      stages[s3Idx] = stages[s4Idx];
+      stages[s4Idx] = temp;
+    }
+  }
+
+  // Modifiers (unchanged)
+  const isHesitant = confusionMetrics.state === "HESITANT";
+  let stepsPromptModifier = "";
+  if (isHesitant) {
+    stepsPromptModifier = "\nCRITICAL: The student is HESITANT. Break the calculations down into more detailed, granular intermediate steps so they don't feel overwhelmed.";
+  }
+  let stage4Modifier = "";
+  if (isConfused) {
+    stage4Modifier = "\nCRITICAL: The student is CONFUSED. Explain using a concrete numerical example first, rather than abstract formulas. Keep math steps extremely clear.";
+  }
+  let generalModifier = "";
+  if (learningState.confusedStages && learningState.confusedStages.length) {
+    generalModifier = `\nNote: The student has previously struggled with these stages: ${learningState.confusedStages.join(", ")}. Avoid overly complex mathematical jargon, proceed with high pedagogical care, and do not repeat abstract explanations that might have failed before.`;
+  }
+
+  const stageOutputs = {};
+  // 4. Run stages sequentially
+  for (const stage of stages) {
+    try {
+      const systemPrompt = stage.prompt + (stage.num === 4 ? (stepsPromptModifier + stage4Modifier) : "") + generalModifier;
+      const messageContent = [
+        `User request: ${userMessage}`,
+        "",
+        summarizeScene(finalSceneSnapshot, sceneContext || {}),
+        "",
+        `Scene focus: ${sceneContext?.sceneFocus?.primaryInsight || "none"}.`,
+        `Current guidance: ${sceneContext?.guidance?.coachFeedback || "none"}.`,
+      ];
+      if (sceneCommand) {
+        messageContent.push(`Proposed 3D Scene Command: ${JSON.stringify(sceneCommand)}`);
+      }
+      // Add prior stage results for context awareness
+      for (const prevStage of stages) {
+        if (stageOutputs[prevStage.name]) {
+          messageContent.push(`[Prior Stage Result - ${prevStage.name.toUpperCase()} (Stage ${prevStage.num})]:\n${typeof stageOutputs[prevStage.name] === "string" ? stageOutputs[prevStage.name] : JSON.stringify(stageOutputs[prevStage.name])}`);
+        }
+      }
+      const messages = [{ role: "user", content: messageContent.join("\n") }];
+      const text = await executeStageWithRetry(stage.name, async () => {
+        return await converseWithModelFailover(
+          "text",
+          systemPrompt,
+          messages,
+          { maxTokens: 1000, temperature: stage.temperature, modelIds: stage.modelIds }
+        );
+      });
+      let parsedContent = text;
+      if (stage.name === "deconstruct" || stage.name === "steps") {
+        try {
+          parsedContent = JSON.parse(cleanupJson(text));
+        } catch (err) {
+          console.warn(`Failed to parse JSON for stage ${stage.name}, using raw text:`, err);
+          parsedContent = stage.name === "deconstruct"
+            ? { problemType: "unknown", domain: "mathematics", knowns: {}, unknown: "unknown", commonMistake: "arithmetic" }
+            : [];
+        }
+      }
+      let sceneActions = [];
+      if (stage.name === "steps" && Array.isArray(parsedContent)) {
+        sceneActions = parsedContent
+          .map(step => ({ action: step.sceneAction || step.action, target: step.sceneTarget || step.target }))
+          .filter(a => a.action && a.target);
+      }
+      stageOutputs[stage.name] = parsedContent;
+      if (writeChunk) {
+        await writeChunk({ type: stage.name, stage: stage.num, content: parsedContent, sceneActions, isComplete: true });
+      }
+    } catch (error) {
+      console.error(`Skipping stage ${stage.name} (Stage ${stage.num}) due to failure:`, error);
+      if (writeChunk) {
+        await writeChunk({ type: "stage_error", stage: stage.num, content: stage.name, sceneActions: [], isComplete: true });
+      }
+    }
+  }
+
+  const finalReply = stageOutputs["answer"] || stageOutputs["manipulation"] || stageOutputs["steps"] || stageOutputs["formula"] || stageOutputs["intuition"] || freeformFallbackReply(finalSceneSnapshot, sceneContext || {}, userMessage, sceneCommand);
+  const textResult = typeof finalReply === "string" ? finalReply : JSON.stringify(finalReply);
+  const meta = buildFreeformResponseMeta(normalizedSnapshot, sceneCommand);
+  return { text: textResult, meta };
+}
+
 export function buildFallbackFreeformTurn({
   sceneSnapshot,
   sceneContext = null,
@@ -667,26 +829,13 @@ export async function generateFreeformTutorTurn({
   if (heuristicTurn) {
     const meta = buildFreeformResponseMeta(normalizedSnapshot, heuristicTurn.sceneCommand);
     if (writeChunk) {
-      await writeChunk({
-        type: "answer",
-        stage: 6,
-        content: heuristicTurn.text,
-        sceneActions: [],
-        isComplete: true
-      });
+      await writeChunk({ type: "answer", stage: 6, content: heuristicTurn.text, sceneActions: [], isComplete: true });
     }
-    return {
-      text: heuristicTurn.text,
-      meta,
-    };
+    return { text: heuristicTurn.text, meta };
   }
 
   if (!hasCredentials()) {
-    return buildFallbackFreeformTurn({
-      sceneSnapshot: normalizedSnapshot,
-      sceneContext,
-      userMessage,
-    });
+    return buildFallbackFreeformTurn({ sceneSnapshot: normalizedSnapshot, sceneContext, userMessage });
   }
 
   try {
@@ -702,9 +851,7 @@ export async function generateFreeformTutorTurn({
 
     // 1. Generate scene command if needed
     let sceneCommand = null;
-    const isSceneQuery = shouldAskModelForSceneCommand(userMessage) || 
-      /find|solve|calculate|intersection|distance|angle|line|plane|vector|sphere|cylinder|cone|pyramid|cube|cuboid/i.test(userMessage);
-    
+    const isSceneQuery = shouldAskModelForSceneCommand(userMessage) || /find|solve|calculate|intersection|distance|angle|line|plane|vector|sphere|cylinder|cone|pyramid|cube|cuboid/i.test(userMessage);
     if (isSceneQuery) {
       sceneCommand = await generateSceneCommand(normalizedSnapshot, sceneContext || {}, learningState, userMessage);
     }
@@ -715,68 +862,28 @@ export async function generateFreeformTutorTurn({
       finalSceneSnapshot = projectSceneSnapshot(normalizedSnapshot, sceneCommand);
     }
 
-    // 3. Define the stages
-    const stages = [
-      {
-        num: 1,
-        name: "deconstruct",
-        model: "groq",
-        prompt: STAGE_1_DECONSTRUCT_PROMPT,
-        modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-        temperature: 0.1
-      },
-      {
-        num: 2,
-        name: "intuition",
-        model: "gemini",
-        prompt: STAGE_2_INTUITION_PROMPT,
-        modelIds: ["gemini-2.5-flash"],
-        temperature: 0.3
-      },
-      {
-        num: 3,
-        name: "formula",
-        model: "groq",
-        prompt: STAGE_3_FORMULA_PROMPT,
-        modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-        temperature: 0.2
-      },
-      {
-        num: 4,
-        name: "steps",
-        model: "gemini",
-        prompt: STAGE_4_STEPS_PROMPT,
-        modelIds: ["gemini-2.5-flash"],
-        temperature: 0.1
-      },
-      {
-        num: 5,
-        name: "manipulation",
-        model: "gemini",
-        prompt: STAGE_5_MANIPULATION_PROMPT,
-        modelIds: ["gemini-2.5-flash"],
-        temperature: 0.3
-      },
-      {
-        num: 6,
-        name: "answer",
-        model: "groq",
-        prompt: STAGE_6_ANSWER_PROMPT,
-        modelIds: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-        temperature: 0.1
-      }
-    ];
-
-    // Swap Stage 3 and Stage 4 if the learner is CONFUSED
-    if (isConfused) {
-      const s3Idx = stages.findIndex(s => s.num === 3);
-      const s4Idx = stages.findIndex(s => s.num === 4);
-      if (s3Idx !== -1 && s4Idx !== -1) {
-        const temp = stages[s3Idx];
-        stages[s3Idx] = stages[s4Idx];
-        stages[s4Idx] = temp;
-      }
+    // Conditional pipeline execution based on flag
+    if (USE_PROGRESSIVE_STAGES) {
+      return await runProgressiveStagePipeline({
+        normalizedSnapshot,
+        sceneCommand,
+        finalSceneSnapshot,
+        sceneContext,
+        learningState,
+        userMessage,
+        sessionId,
+        confusionMetrics,
+        writeChunk,
+      });
     }
+
+    // Legacy path – fallback to simple response
+    return buildFallbackFreeformTurn({ sceneSnapshot: normalizedSnapshot, sceneContext, userMessage, sceneCommand });
+
+
+
+
+    
 
     // Modifiers
     let stepsPromptModifier = "";
