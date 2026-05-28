@@ -3601,6 +3601,8 @@ export function bootstrapApp() {
         hudBtn.style.background = "#E24B4A";
         hudBtn.style.borderColor = "#E24B4A";
       }
+      // Show webcam PIP so user can see their face
+      webcamEl?.classList.add("active");
 
       if (gestureGuideEl) {
         gestureGuideEl.classList.remove("hidden");
@@ -3652,6 +3654,8 @@ export function bootstrapApp() {
       hudBtn.style.background = "#1D9E75";
       hudBtn.style.borderColor = "#1D9E75";
     }
+    // Hide webcam PIP
+    webcamEl?.classList.remove("active");
   }
 
   document.addEventListener("visibilitychange", () => {

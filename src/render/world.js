@@ -156,14 +156,16 @@ export function createWorld(container) {
     return material;
   }
 
-  function buildLineMaterial(color, opacity = 0.82) {
+  function buildLineMaterial(color, opacity = 1.0) {
     const tone = new THREE.Color(color);
+    // Darken slightly so vectors pop against the white canvas
+    tone.multiplyScalar(0.72);
     const material = new THREE.MeshBasicMaterial({
       color: tone,
       side: THREE.DoubleSide,
       toneMapped: false,
     });
-    material.transparent = true;
+    material.transparent = opacity < 1.0;
     material.opacity = opacity;
     material.depthTest = false;
     material.depthWrite = false;

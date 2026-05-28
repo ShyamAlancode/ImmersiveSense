@@ -1049,6 +1049,13 @@ function completeLesson({ reason = "correct-answer", revealSolution = false } = 
   renderAssessment(tutorState.latestAssessment);
   renderSceneInfo();
   void fetchSimilarQuestionsOnce();
+
+  // Reveal post-lesson stats panel: session summary, mastery bars, cognitive console
+  const rightPanel = document.getElementById("rightPanel");
+  if (rightPanel) {
+    rightPanel.classList.remove("panel-in-lesson");
+    rightPanel.classList.add("panel-post-lesson");
+  }
 }
 
 function normalizeSolutionText(value = "") {
@@ -2112,6 +2119,18 @@ async function handleQuestionSubmit(overrides = {}) {
   analyticFullSolutionVisible = false;
   analyticFormulaDismissed = false;
   similarQuestionRequest = null;
+
+  // Hide post-lesson stats: reset panel to in-lesson state for new question
+  const rightPanel = document.getElementById("rightPanel");
+  if (rightPanel) {
+    rightPanel.classList.remove("panel-post-lesson");
+    rightPanel.classList.add("panel-in-lesson");
+  }
+  // Reset session counter
+  _sessionMessageCount = 0;
+  const msgCountEl = document.getElementById("session-concepts-explored");
+  if (msgCountEl) msgCountEl.textContent = "0";
+
   analyticOverlayManager?.clear();
   hideEvidence();
   renderAnalyticPanels(null);

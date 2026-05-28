@@ -1700,3 +1700,65 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   WEBCAM PICTURE-IN-PICTURE
+   ═══════════════════════════════════════════════════════════ */
+.webcam-pip {
+  position: absolute;
+  bottom: 56px;
+  right: 14px;
+  width: 148px;
+  height: 111px;
+  border-radius: 10px;
+  object-fit: cover;
+  /* Mirror so face looks natural */
+  transform: scaleX(-1);
+  z-index: 30;
+  background: #111;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35), 0 0 0 2px rgba(255,255,255,0.12);
+  /* Hidden until webcam is running */
+  display: none;
+  transition: opacity 0.4s ease;
+}
+.webcam-pip.active {
+  display: block;
+  animation: pipFadeIn 0.4s ease forwards;
+}
+@keyframes pipFadeIn {
+  from { opacity: 0; transform: scaleX(-1) scale(0.85); }
+  to   { opacity: 1; transform: scaleX(-1) scale(1); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   POST-LESSON REVEAL: session stats + cognitive console
+   Hidden during learning, slide-in after lesson complete
+   ═══════════════════════════════════════════════════════════ */
+.session-card,
+.mastery,
+.cognitive-console {
+  transition: opacity 0.5s ease, transform 0.5s ease, max-height 0.5s ease;
+}
+
+/* Hide session stats + mastery + console during an active lesson */
+.panel-in-lesson .session-card,
+.panel-in-lesson .mastery,
+.panel-in-lesson .cognitive-console {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  max-height: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+/* Slide them in after lesson complete */
+.panel-post-lesson .session-card,
+.panel-post-lesson .mastery,
+.panel-post-lesson .cognitive-console {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  max-height: 1200px;
+}
