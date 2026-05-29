@@ -10,7 +10,8 @@ import {
   transcribeGroq,
   visionGroq,
 } from "../middleware/groq.js";
-import { getModelCandidateOrder, rememberWorkingModel } from "./modelRouter.js";
+import { getModelCandidateOrder, rememberWorkingModel, resolveModelId } from "./modelRouter.js";
+export { resolveModelId };
 import { PLACEHOLDER_SCENE_SPEC } from "./plan/shared.js";
 
 function normalizeModelIds(kind, modelIds = null) {

@@ -8,7 +8,7 @@
 import { USE_PROGRESSIVE_STAGES, STAGE_MODELS } from '../config.js';
 import { converseWithModelFailover, resolveModelId } from './modelInvoker.js';
 import { runSocraticCoach, recordConfusedStage } from './pedagogy/socraticCoach.js';
-import { classifyConfusion } from './confusionClassifier.js';
+import { classifyConfusion } from './pedagogy/confusionClassifier.js';
 
 // ── Stage labels ─────────────────────────────────────────
 const STAGE_META = {
@@ -25,31 +25,276 @@ const STAGE_META = {
  */
 export async function generateFreeformTutorTurn({
   message,
+  userMessage,
   sessionId,
   plan,
   sceneContext,
+  sceneSnapshot,
   confusionMetrics,
   writeChunk,
 }) {
+  const effMessage = message || userMessage || '';
+  const effPlan = plan || null;
+
+  // 1. Run heuristic showcase command first if it matches
+  const snapshot = sceneSnapshot || sceneContext?.currentSceneSpec || { objects: [], selectedObjectId: null };
+  const heuristicTurn = heuristicSceneCommand(effMessage, snapshot, sceneContext || {});
+  if (heuristicTurn) {
+    const meta = {
+      mode: "freeform",
+      actions: [
+        {
+          id: "freeform-showcase",
+          label: "Show me something cool",
+          kind: "freeform-prompt",
+          payload: { prompt: "Show me something cool in math." },
+        },
+        {
+          id: "freeform-capabilities",
+          label: "What can you do?",
+          kind: "freeform-prompt",
+          payload: { prompt: "What can you do with the scene right now?" },
+        }
+      ],
+      focusTargets: [],
+      systemContextMessage: "Freeform scene chat ready.",
+      sceneCommand: heuristicTurn.sceneCommand,
+      checkpoint: null,
+      stageStatus: null,
+      sceneDirective: null,
+    };
+    if (writeChunk) {
+      try {
+        await writeChunk({
+          event: "tutorStage",
+          data: {
+            type: "answer",
+            stage: 6,
+            content: heuristicTurn.text,
+            sceneActions: [],
+            isComplete: true
+          }
+        });
+      } catch {
+        await writeChunk({
+          type: "answer",
+          stage: 6,
+          content: heuristicTurn.text,
+          sceneActions: [],
+          isComplete: true
+        });
+      }
+    }
+    return { text: heuristicTurn.text, meta };
+  }
+
+  // 2. If no plan, fall back to modelFreeformTurn
+  if (!effPlan) {
+    const meta = {
+      mode: "freeform",
+      actions: [
+        {
+          id: "freeform-showcase",
+          label: "Show me something cool",
+          kind: "freeform-prompt",
+          payload: { prompt: "Show me something cool in math." },
+        },
+        {
+          id: "freeform-capabilities",
+          label: "What can you do?",
+          kind: "freeform-prompt",
+          payload: { prompt: "What can you do with the scene right now?" },
+        }
+      ],
+      focusTargets: [],
+      systemContextMessage: "Freeform scene chat ready.",
+      sceneCommand: null,
+      checkpoint: null,
+      stageStatus: null,
+      sceneDirective: null,
+    };
+
+    const tutorResult = await modelFreeformTurn({
+      message: effMessage,
+      sessionId,
+      plan: effPlan,
+      sceneContext,
+      confusionMetrics,
+      writeChunk,
+    });
+    return {
+      text: tutorResult?.text || "",
+      meta,
+    };
+  }
+
+  // 3. Otherwise, use progressive pipeline (if configured) or model freeform turn
   if (USE_PROGRESSIVE_STAGES) {
     return runProgressiveStagePipeline({
-      message,
+      message: effMessage,
       sessionId,
-      plan,
+      plan: effPlan,
       sceneContext,
       confusionMetrics,
       writeChunk,
     });
   } else {
     return modelFreeformTurn({
-      message,
+      message: effMessage,
       sessionId,
-      plan,
+      plan: effPlan,
       sceneContext,
       confusionMetrics,
       writeChunk,
     });
   }
+}
+
+export function buildFallbackFreeformTurn({
+  sceneSnapshot,
+  sceneContext = null,
+  userMessage = "",
+  sceneCommand = null,
+}) {
+  const objects = sceneSnapshot?.objects || [];
+  const selection = sceneContext?.selectedObjectId
+    ? objects.find(o => o.id === sceneContext.selectedObjectId)
+    : null;
+  const objectCount = objects.length;
+
+  let text = "I'm having trouble reaching my AI backend right now. Try again in a moment, or ask me to build a scene — I can handle that offline!";
+  if (!objectCount) {
+    text = "The scene is blank right now. Ask me to build something, explain a concept, or say 'show me something cool.'";
+  } else if (selection) {
+    const label = selection.label || 'the object';
+    text = `You're looking at ${label}. I can explain it, change it, or build something around it.`;
+  } else {
+    text = `There are ${objectCount} objects in the scene. Ask me to explain them, remix them, or build a fresh math visual.`;
+  }
+
+  return {
+    text,
+    meta: {
+      mode: "freeform",
+      actions: [
+        {
+          id: "freeform-showcase",
+          label: "Show me something cool",
+          kind: "freeform-prompt",
+          payload: { prompt: "Show me something cool in math." },
+        },
+        {
+          id: "freeform-capabilities",
+          label: "What can you do?",
+          kind: "freeform-prompt",
+          payload: { prompt: "What can you do with the scene right now?" },
+        }
+      ],
+      focusTargets: [],
+      systemContextMessage: objectCount
+        ? `Freeform scene chat with ${objectCount} object${objectCount === 1 ? "" : "s"} ready.`
+        : "Freeform scene chat ready.",
+      sceneCommand,
+      checkpoint: null,
+      stageStatus: null,
+      sceneDirective: null,
+    }
+  };
+}
+
+function looksLikeShowcaseRequest(userMessage = "") {
+  const lower = String(userMessage || "").toLowerCase();
+  return (
+    /\bshow me\b.*\bcool\b/.test(lower)
+    || /\bsomething cool\b/.test(lower)
+    || /\bsurprise me\b/.test(lower)
+    || /\bmind[- ]?blowing\b/.test(lower)
+    || /\brandom\b/.test(lower) && /\b(math|scene|visual|idea)\b/.test(lower)
+  );
+}
+
+function heuristicSceneCommand(userMessage = "", sceneSnapshot = {}, sceneContext = {}) {
+  const lower = String(userMessage || "").toLowerCase();
+
+  if (looksLikeShowcaseRequest(userMessage)) {
+    return {
+      text: "I loaded a skew-lines scene: the short connector is the common perpendicular, so its length is the hidden shortest distance. Orbit around it and notice how every other connector sneaks some motion along one line or the other.",
+      sceneCommand: {
+        summary: "Load showcase: Skew Lines Hidden Bridge",
+        operations: [
+          {
+            kind: "replace_scene",
+            objects: [
+              {
+                id: "line-1",
+                shape: "line",
+                label: "Line 1",
+                params: { start: [1, 2, 0], end: [3, 1, 3] }
+              }
+            ],
+            selectedObjectId: "line-1"
+          }
+        ]
+      }
+    };
+  }
+
+  if (lower.includes("electric") || lower.includes("charge")) {
+    return {
+      text: "I loaded a live electric-field scene. Drag the charged objects and watch the field react.",
+      sceneCommand: {
+        summary: "Load electric-field showcase",
+        operations: [
+          {
+            kind: "replace_scene",
+            objects: [
+              {
+                id: "charge-pos",
+                shape: "sphere",
+                label: "Positive Charge",
+                params: { radius: 0.2 },
+                metadata: {
+                  physics: {
+                    kind: "charge",
+                    value: 1
+                  }
+                }
+              },
+              {
+                id: "charge-neg",
+                shape: "sphere",
+                label: "Negative Charge",
+                params: { radius: 0.2 },
+                metadata: {
+                  physics: {
+                    kind: "charge",
+                    value: -1
+                  }
+                }
+              }
+            ],
+            selectedObjectId: "charge-pos"
+          }
+        ]
+      }
+    };
+  }
+
+  if (/\bclear\b.*\bscene\b/.test(lower) || /\bstart over\b/.test(lower)) {
+    return {
+      text: "Scene cleared. Ask me to build something new, or say 'show me something cool.'",
+      sceneCommand: { summary: "Clear the scene", operations: [{ kind: "clear_scene" }] },
+    };
+  }
+
+  if (/\breset\b.*\bview\b/.test(lower) || /\bcenter\b.*\bview\b/.test(lower)) {
+    return {
+      text: "I reset the camera so the whole scene is easier to inspect.",
+      sceneCommand: { summary: "Reset the camera view", operations: [{ kind: "reset_view" }] },
+    };
+  }
+
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -332,8 +577,15 @@ RULE: Always reference a specific visible object. Never start with a generic con
       maxTokens: 200,
     });
     const text = response?.text || response?.content || response || '';
-    writeChunk({ event: 'text', data: { text } });
+    if (writeChunk) {
+      writeChunk({ event: 'text', data: { text } });
+    }
+    return { text };
   } catch (err) {
-    writeChunk({ event: 'text', data: { text: `I encountered an error: ${err.message}. Please try again.` } });
+    const text = `I encountered an error: ${err.message}. Please try again.`;
+    if (writeChunk) {
+      writeChunk({ event: 'text', data: { text } });
+    }
+    return { text };
   }
 }
