@@ -4092,6 +4092,7 @@ if (typeof window !== "undefined" && !window.__appBootstrapped) {
     if (window.__actualAppBootstrapped) return;
     window.__actualAppBootstrapped = true;
     const appContext = bootstrapApp();
+    window.world = appContext.world;
     const isDemoMode = new URLSearchParams(window.location.search).get("demo") === "true";
     
     import("./ui/tutorController.js").then(({ initTutorController, updateTutorLabels }) => {

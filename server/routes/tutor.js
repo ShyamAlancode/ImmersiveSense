@@ -758,10 +758,18 @@ ${instruction}`.trim();
               sessionId,
               confusionMetrics,
               writeChunk: async (chunk) => {
-                await stream.writeSSE({
-                  event: "tutorStage",
-                  data: JSON.stringify(chunk)
-                });
+                if (chunk && typeof chunk === "object" && "event" in chunk) {
+                  const { event, data } = chunk;
+                  await stream.writeSSE({
+                    event: event || "text",
+                    data: typeof data === "string" ? data : JSON.stringify(data)
+                  });
+                } else {
+                  await stream.writeSSE({
+                    event: "tutorStage",
+                    data: typeof chunk === "string" ? chunk : JSON.stringify(chunk)
+                  });
+                }
               }
             });
           } catch (error) {

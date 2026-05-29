@@ -1,143 +1,193 @@
-import { converseWithModelFailover } from "../modelInvoker.js";
-import { getOrCreateStudentModel, updateStudentMastery, recordStudentMisconception } from "./studentModel.js";
-import { cleanupJson } from "../plan/shared.js";
+// ═══════════════════════════════════════════════════════
+// server/services/pedagogy/socraticCoach.js
+// REWRITTEN — Grounded Socratic questions with scene
+// references. 3-question limit before forcing answer.
+// ═══════════════════════════════════════════════════════
 
-const SOCRATIC_COACH_SYSTEM_PROMPT = `You are the Socratic Coach Agent in the ImmersiveSense tutoring system.
-Your job is to guide the student to understand the concept by asking guiding questions, giving targeted hints, or redirecting their focus.
-You do not solve the problem for them unless explicitly instructed.
-You watch their confusion state, progress, and mastery.
+import { converseWithModelFailover } from '../modelInvoker.js';
+import { resolveModelId } from '../modelRouter.js';
 
-You will receive:
-1. The student model state (mastery graph, active misconceptions, learner level).
-2. The current lesson plan details (concept, formula, steps).
-3. The current stage status (e.g. stage id, goal, visual objects in scene).
-4. The learner's input and recent conversation history.
-5. The learner's confusion metrics (interaction errors, hesitate count, pause duration).
+// Per-session question state
+const _sessionState = new Map();
 
-If confusion is detected (high hesitate count or errors), you MUST adjust your style:
-- Shift modality: if geometric is not working, try a physics analogy or algebraic breakdown.
-- Scaffolding: break the current step into a simpler sub-question.
-
-You must output valid JSON containing:
-1. 'text': your conversational tutor reply (max 3 sentences).
-2. 'tutorAnnotations': an array of floating 3D annotations to place in the scene, attached to visual object IDs (like 'A-mesh', 'L1-mesh') or coordinate arrays.
-3. 'detectedMisconception': optional misconception tag identified in this turn.
-4. 'pedagogyModality': the mode you chose ('geometric' | 'physics' | 'algebraic' | 'basic').
-
-Structure your response ONLY in this exact JSON schema:
-{
-  "text": "Socratic guidance text here...",
-  "detectedMisconception": "string or null",
-  "pedagogyModality": "geometric",
-  "tutorAnnotations": [
-    {
-      "id": "anno-1",
-      "type": "tutor-callout",
-      "text": "Check this slope!",
-      "targetObjectId": "L1-mesh",
-      "position": [1, 2, 0],
-      "style": "hint"
-    }
-  ]
+function _getSessionState(sessionId) {
+  if (!_sessionState.has(sessionId)) {
+    _sessionState.set(sessionId, {
+      questionCount: 0,
+      confusedStages: [],
+      lastModality: null,
+      forceAnswer: false,
+    });
+  }
+  return _sessionState.get(sessionId);
 }
 
-Rules:
-- Be encouraging and concise. Do not overwhelm the student.
-- Point annotations directly to relevant objects.
-- Output JSON only. No text outside the JSON structure.`;
+export function recordConfusedStage(sessionId, stage) {
+  const s = _getSessionState(sessionId);
+  if (!s.confusedStages.includes(stage)) {
+    s.confusedStages.push(stage);
+  }
+}
+
+export function resetSession(sessionId) {
+  _sessionState.delete(sessionId);
+}
 
 /**
- * Agent 4: Socratic Coach
- * Decides conversational response and spatial annotations.
- * @param {object} params
+ * Build a grounded Socratic question or force the full answer.
+ *
+ * @param {Object} params
  * @param {string} params.sessionId
- * @param {object} params.plan - The lesson plan
- * @param {string} params.userMessage - Learner message
- * @param {object} params.learningState - Conversation and stage state
- * @param {object} params.confusionMetrics - Interaction logs (pause, hesitation, errors)
- * @param {string} params.activeModality - Current active modality (geometric, physics, intuition, algebraic)
- * @returns {Promise<object>} Response text and spatial annotations
+ * @param {string} params.question       - student's raw question
+ * @param {Object} params.plan            - current lesson plan
+ * @param {Object} params.sceneContext    - { visibleObjects, sceneType, studentAction, currentSceneSpec }
+ * @param {Object} params.confusionMetrics - { questionCount, forceAnswer }
+ * @param {Function} params.writeChunk    - (chunk: string) => void  for SSE streaming
+ * @returns {Promise<{ forceAnswer: boolean, questionCount: number }>}
  */
-export async function runSocraticCoach({ sessionId, plan, userMessage, learningState, confusionMetrics, activeModality = "geometric" }) {
-  const studentModel = getOrCreateStudentModel(sessionId);
-  const currentStageId = learningState?.currentStageId || plan?.lessonStages?.[0]?.id || "orient-stage";
-  const stage = plan?.lessonStages?.find((s) => s.id === currentStageId) || plan?.lessonStages?.[0];
+export async function runSocraticCoach({
+  sessionId,
+  question,
+  plan,
+  sceneContext,
+  confusionMetrics,
+  writeChunk,
+}) {
+  const ss = _getSessionState(sessionId || 'default');
+  ss.questionCount = (confusionMetrics?.questionCount ?? ss.questionCount) + 1;
 
-  // Update mastery of the general concept slightly just for attempting
-  const topic = plan?.sceneFocus?.concept || "general_geometry";
+  const visibleObjects = sceneContext?.visibleObjects || [];
+  const sceneType      = sceneContext?.sceneType || 'unknown';
+  const studentAction  = sceneContext?.studentAction || null;
+  const specSummary    = _summarizeSpec(sceneContext?.currentSceneSpec);
 
-  const contextData = JSON.stringify({
-    studentModel: {
-      learnerLevel: studentModel.learnerLevel,
-      misconceptions: studentModel.misconceptions,
-      mastery: studentModel.graph[topic] || { probability: 0.5 }
-    },
-    plan: {
-      concept: plan?.sceneFocus?.concept,
-      formula: plan?.answerScaffold?.formula,
-      finalAnswer: plan?.answerScaffold?.finalAnswer,
-      solutionSteps: plan?.analyticContext?.solutionSteps
-    },
-    stage: {
-      id: currentStageId,
-      goal: stage?.goal,
-      intro: stage?.tutorIntro,
-      visibleObjects: stage?.highlightTargets || []
-    },
-    userMessage,
-    activeModality,
-    modalityInstruction: `The student is currently using the "${activeModality}" explanation modality. You must explain the current step or concept specifically using this perspective:
-    - geometric: focus on tangent slopes, Riemann slices, curves, zoom-ins, graphs.
-    - physics: focus on motion, velocity, rate of change, physical flow, accumulation.
-    - intuition: focus on analogies, metaphors, conceptual visualization.
-    - algebraic: focus on formulas, algebraic steps, substitution, variables.`,
-    history: (learningState?.history || []).slice(-6).map((m) => `${m.role}: ${m.content}`),
-    confusionMetrics
-  });
+  // ── Force answer after 3 questions ──────────────────
+  const shouldForce = ss.questionCount >= 3
+    || confusionMetrics?.forceAnswer === true
+    || question === '__FORCE_ANSWER__';
 
-  const messages = [
-    {
-      role: "user",
-      content: [{ text: contextData }]
-    }
-  ];
+  if (shouldForce) {
+    ss.forceAnswer = true;
+    writeChunk?.({ type: 'text', content: '\n\n**Let me walk you through the complete solution now.**\n\n' });
+    return { forceAnswer: true, questionCount: ss.questionCount };
+  }
 
-  const modelIds = ["llama-3.3-70b-versatile", "gemini-2.5-flash"];
-  let result = null;
+  // ── Build prompt ─────────────────────────────────────
+  const visiblesStr = visibleObjects.length > 0
+    ? visibleObjects.map((v, i) => `${i+1}. "${v}"`).join(', ')
+    : 'none (scene still loading)';
+
+  const systemPrompt = `You are a Socratic math tutor guiding a JEE student through a 3D interactive scene.
+
+CRITICAL RULES — FOLLOW THESE EXACTLY:
+1. NEVER start your response with a generic statement about the concept. Start by referencing something SPECIFIC in the 3D scene.
+2. Every question MUST name a specific visible object from the list below by its exact name.
+3. NEVER ask abstract questions like "what do you notice?" without pointing at a specific scene object.
+4. Your response must be 2-3 sentences maximum. One scene reference, one targeted insight, one question.
+5. Questions must BUILD on each other — each should unlock the next insight.
+6. If visibleObjects is empty, describe what the student should see forming and ask them to wait for it.
+7. This is question ${ss.questionCount} of maximum 3. Make it count.
+
+CURRENT 3D SCENE:
+- Scene type: ${sceneType}
+- Visible objects: ${visiblesStr}
+- Student last action: ${studentAction || 'none'}
+- Scene summary: ${specSummary}
+
+GOOD RESPONSE EXAMPLE (skew lines):
+"Look at the gold connector segment floating between the two lines — that vertical segment IS the shortest distance. Try rotating the scene with your mouse: notice how it stays perpendicular to both lines no matter which angle you view it from. Why must the shortest path between two skew lines always be perpendicular to both direction vectors?"
+
+BAD RESPONSE EXAMPLE (never do this):
+"Imagine two lines in space that don't touch. What do you notice about their relationship?"
+
+CONFUSED STAGES HISTORY: ${ss.confusedStages.join(', ') || 'none'}
+${ss.confusedStages.includes(ss.questionCount - 1) ? 'IMPORTANT: The previous explanation style did not work. Try a physical analogy (railway tracks, light beams, etc) this time.' : ''}`;
+
+  const userPrompt = `The student is working on: "${question}"
+Current scene shows: ${visiblesStr}
+Ask a grounded Socratic question that references a specific visible object.`;
+
+  // Route to fast model — Groq 8B for Socratic questions
+  const modelIds = resolveModelId?.('chat') || ['llama-3.1-8b-instant'];
 
   try {
-    const rawText = await converseWithModelFailover("text", SOCRATIC_COACH_SYSTEM_PROMPT, messages, {
-      maxTokens: 1024,
-      temperature: 0.3,
-      modelIds
+    const response = await converseWithModelFailover({
+      messages: [{ role: 'user', content: userPrompt }],
+      systemPrompt,
+      modelIds,
+      maxTokens: 180,
     });
-    result = JSON.parse(cleanupJson(rawText));
+
+    const text = response?.text || response?.content || response || '';
+
+    // Stream the response
+    writeChunk?.({ type: 'text', content: text });
+
+    // Generate context-specific action buttons
+    const actions = _generateContextActions(visibleObjects, sceneType, ss.questionCount);
+    writeChunk?.({ type: 'actions', actions });
+
+    return { forceAnswer: false, questionCount: ss.questionCount };
+
   } catch (err) {
-    console.error("[Socratic Coach] Failed calling LLM, using fallback:", err);
-    result = {
-      text: "Look closely at the staged scene. What do you think happens to the values here?",
-      detectedMisconception: null,
-      pedagogyModality: "geometric",
-      tutorAnnotations: []
-    };
+    console.error('[SocraticCoach] error:', err);
+    // Fallback to force answer on error
+    writeChunk?.({ type: 'text', content: `Let me show you the solution directly.\n\n` });
+    return { forceAnswer: true, questionCount: ss.questionCount };
+  }
+}
+
+// ── Context-specific action generator ───────────────────
+function _generateContextActions(visibleObjects, sceneType, questionCount) {
+  const actions = [];
+
+  // Scene-specific "show me" button
+  const firstObj = visibleObjects[0];
+  if (firstObj) {
+    actions.push({
+      label: `Highlight the ${firstObj}`,
+      action: 'highlight_vector',
+      target: firstObj,
+      variant: 'scene',
+    });
+  } else {
+    actions.push({
+      label: 'Show me the lines',
+      action: 'highlight_vector',
+      target: 'all_lines',
+      variant: 'scene',
+    });
   }
 
-  // Update student model based on results and confusion
-  if (confusionMetrics?.hesitateCount > 3 || confusionMetrics?.errors > 2) {
-    updateStudentMastery(sessionId, topic, "hesitant");
-  } else if (result.detectedMisconception) {
-    recordStudentMisconception(sessionId, result.detectedMisconception);
-    updateStudentMastery(sessionId, topic, "stuck");
+  // Formula button
+  actions.push({
+    label: 'What is the formula',
+    action: 'show_formula',
+    target: 'formula',
+    variant: '',
+  });
+
+  // Force calculate if on question 2+
+  if (questionCount >= 2) {
+    actions.push({
+      label: 'Calculate step by step',
+      action: 'trigger_stage_4',
+      target: null,
+      variant: 'primary',
+    });
   }
 
-  return {
-    text: result.text || "Let's work through this step together.",
-    tutorAnnotations: result.tutorAnnotations || [],
-    pedagogyModality: result.pedagogyModality || "geometric",
-    conceptVerdict: result.detectedMisconception ? {
-      verdict: "PARTIAL",
-      gap: result.text,
-      misconception_type: result.detectedMisconception
-    } : null
-  };
+  return actions;
+}
+
+// ── Spec summarizer ──────────────────────────────────────
+function _summarizeSpec(spec) {
+  if (!spec) return 'No scene spec available';
+  try {
+    const objects = spec.objectSuggestions || spec.objects || [];
+    const labels = objects.map(o => o.label || o.type || o.name).filter(Boolean).slice(0, 6);
+    return labels.length > 0 ? labels.join(', ') : 'Scene rendering';
+  } catch {
+    return 'Scene spec present';
+  }
 }

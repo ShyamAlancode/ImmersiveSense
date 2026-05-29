@@ -1,4038 +1,908 @@
-import {
-  requestScenePlan,
-  evaluateBuild,
-  askTutor,
-  requestSimilarTutorQuestions,
-  appendVoiceSessionAudio,
-  createVoiceSession,
-  interruptVoiceSessionTurn,
-  startVoiceSessionTurn,
-  stopVoiceSessionTurn,
-  subscribeToVoiceSession,
-} from "../ai/client.js";
-import { buildSceneSnapshotFromSuggestions, normalizeScenePlan } from "../ai/planSchema.js";
-import { TutorAnnotationManager } from "../render/tutorAnnotationManager.js";
-import { confusionTracker } from "../tracking/confusionTracker.js";
-import { computeGeometry } from "../core/geometry.js";
-import { formatPlanFinalAnswer } from "../core/tutorSolution.js";
-import { initLabelRenderer, renderLabels, addLabel, clearLabels } from "../render/labels.js";
-import { AnalyticOverlayManager } from "../render/analyticOverlayManager.js";
-import { CameraDirector } from "../render/cameraDirector.js";
-import { ElectricFieldManager } from "../render/electricFieldManager.js";
-import { CalculusSimulationManager } from "../render/calculusSimulationManager.js";
-import { CalculusHud } from "./calculusHud.js";
-import { supports2dCompanionShape } from "../ai/representationMode.js";
-import { tutorState } from "../state/tutorState.js";
-import {
-  currentVerdictEntry,
-  deriveHintTypeFromLabel,
-  isAutoAdvanceEnabled,
-  resolveHintFollowUpActionState,
-  resolveTutorActionState,
-} from "../core/tutorActions.js";
-import { mergeRequiredSceneObjects, shouldSyncAnalyticScene } from "./sceneDirectiveSync.js";
-import { resolveDeferredStageAdvance } from "./deferredStageProgression.js";
-import { initUnfoldDrawer, setUnfoldRepresentationMode, syncUnfoldDrawer } from "./unfoldDrawer.js";
-import { hasMathMarkup, renderMathBlockHtml, renderRichTextHtml, renderMath } from "./mathMarkup.js";
-import { renderAnswerCard, planHasAnswerCard } from "./answerCard.js";
-import { MicrophoneCapture } from "./microphoneCapture.js";
-import { closeEvidence, hideEvidence, initEvidencePanel, registerEvidenceAutoClose, showEvidence } from "./evidencePanel.js";
-import { extractPastedQuestionImageFile, prepareQuestionImageForUpload } from "./questionImage.js";
-import {
-  normalizeTutorReplyText,
-  shouldStartLessonFromComposer,
-} from "./tutorConversation.js";
-import { dispatchTTS, cancelTTS as cancelBrowserTTS } from "./voiceController.js";
-import { getContext as getSceneContext, setContext } from "../state/sceneContextStore.js";
+// ═══════════════════════════════════════════════════════
+// src/ui/tutorController.js
+// REWRITTEN — Clean event-driven Socratic orchestration.
+// Handles: chat rendering, moment strip, progressive
+// 6-stage accordion, confusion detection, scene sync.
+// ═══════════════════════════════════════════════════════
 
-let awaitingLearnerResponse = false;
-let lastInputSource = "text";
-let accumulatedTutorText = "";
+import { getContext, setStudentAction, resetContext } from '../state/sceneContextStore.js';
+import { socraticCoachEvents, dispatchCorrectAnswer, dispatchForceCalculation } from '../core/socraticCoachEvents.js';
 
-let world = null;
-let sceneApi = null;
-let tutorAnnotationManager = null;
-let cameraDirector = null;
-let assessmentTimer = null;
-let questionImageFile = null;
-let questionImagePreviewUrl = null;
-let lastSceneFeedback = "ImmersiveSense will react to what you do in the scene.";
-let voiceConversationId = null;
-let activeMicCapture = null;
-let voiceModeTogglePromise = null;
-let voiceTurnStartPromise = null;
-let voiceSessionUnsubscribe = null;
-let voiceAudioUploadChain = Promise.resolve();
-let voiceStreamDraft = null;
-const voiceAudioPlayer = null;
-let voiceModeEnabled = false;
-let voiceTurnOpen = false;
-let voiceUserSpeaking = false;
-let voiceSessionState = "idle";
-let voiceBufferedChunks = [];
-let voiceAssistantBargeInUnlockAt = 0;
-let voicePlaybackSyncToken = 0;
-let lastVoiceAssessment = null;
-let lastVoiceTranscript = "";
-let lastAnnouncedStageKey = null;
-let lastCheckpointKey = null;
-let analyticOverlayManager = null;
-let electricFieldManager = null;
-let calculusSimulationManager = null;
-let calculusHud = null;
-let analyticFormulaVisible = false;
-let analyticFullSolutionVisible = false;
-let analyticFormulaDismissed = false;
-let lastAppliedAnalyticStageId = null;
-let lastAppliedAnalyticCameraBookmarkId = null;
-let deferredStageAdvance = null;
-let similarQuestionRequest = null;
-let stageWrapEl = null;
-let currentRepresentationMode = "3d";
+// ── State ──────────────────────────────────────────────
+const state = {
+  plan: null,
+  sessionId: null,
+  socraticQuestionCount: 0,
+  momentComplete: { observe: false, explore: false, predict: false, verify: false },
+  activeStages: {},         // stageNum → DOM card element
+  thinkingTimer: null,
+  hasExplored: false,
+  questionImagePreviewUrl: null,
+};
 
-let questionSection;
-let questionInput;
-let questionSubmit;
-let questionStatus;
-let questionMathPreview;
-let questionImageInput;
-let questionImageMeta;
-let questionImagePreview;
-let questionImageThumb;
-let questionImageClear;
-let buildFromDiagramBtn;
-let lessonPanelToggle;
-let lessonPanelSummary;
-let chatMessages;
-let chatInput;
-let chatSend;
-let chatMathPreview;
-let voiceControl;
-let voiceRecordBtn;
-let voiceBars;
-let voiceStatus;
-let stageRail;
-let stageRailProgress;
-let stageRailGoal;
-let stageRailNext;
-let chatCheckpoint;
-let chatCheckpointPrompt;
-let checkpointYesBtn;
-let checkpointUnsureBtn;
-let sceneInfo;
-let sceneValidation;
-let cameraBookmarkList;
-let cameraBookmarkPanel = null;
-let objectCount;
-let stepIndicator;
-let formulaCard;
-let formulaCardTitle;
-let formulaCardEquation;
-let formulaCardExplanation;
-let formulaCardRevealBtn;
-let formulaCardCloseBtn;
-let solutionDrawer;
-let solutionDrawerTitle;
-let solutionDrawerAnswer;
-let solutionDrawerAnswerValue;
-let solutionDrawerSteps;
-let solutionDrawerClose;
-let newQuestionBtn;
-let latestTutorActionMessage = null;
-let latestTutorActionState = { actions: [], stageType: "orient", lastVerdict: null };
-let lessonAutoAdvanceTimer = null;
-let currentSolutionSections = [];
+// ── DOM refs ───────────────────────────────────────────
+const chat        = () => document.getElementById('tutor-chat');
+const qaWrap      = () => document.getElementById('quickActionsWrap');
+const thinkingBar = () => document.getElementById('thinkingBar');
+const welcomeState = () => document.getElementById('welcomeState');
+const problemPillText = () => document.getElementById('problem-pill-text');
+const floatingFormulaContent = () => document.getElementById('floatingFormulaContent');
+const toolbarStatus = () => document.getElementById('toolbarStatus');
+const algebraSteps = () => document.getElementById('algebraSteps');
+const algebraEmpty = () => document.getElementById('algebraEmpty');
+const breadcrumb  = () => document.getElementById('breadcrumbText');
 
-function clearLessonAutoAdvanceTimer() {
-  if (lessonAutoAdvanceTimer) {
-    window.clearTimeout(lessonAutoAdvanceTimer);
-    lessonAutoAdvanceTimer = null;
-  }
+// ═══════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════
+export function initTutorController() {
+  _bindMomentStripEvents();
+  _bindSocraticEvents();
+  _bindSendButton();
+  _bindTabSwitch();
+  _fetchInitialStudentModel();
 }
 
-function resetComposerPulse() {
-  chatInput?.classList.remove("input--awaiting");
-  if (chatInput) {
-    void chatInput.offsetWidth;
-    chatInput.classList.add("input--awaiting");
-  }
-}
-
-function focusComposerWithPlaceholder(placeholder = "") {
-  awaitingLearnerResponse = true;
-  if (chatInput) {
-    chatInput.disabled = false;
-    if (placeholder) {
-      chatInput.placeholder = placeholder;
+function _bindMomentStripEvents() {
+  // observe → fires when world.js dispatches sceneReady
+  window.addEventListener('sceneReady', () => {
+    if (!state.momentComplete.observe) {
+      advanceMoment('observe');
     }
-    chatInput.focus();
-  }
-  if (chatSend) chatSend.disabled = false;
-  setVoiceButtonState({ active: voiceModeEnabled, disabled: false });
-  resetComposerPulse();
-}
-
-function formatNumber(value, digits = 2) {
-  const next = Number(value);
-  if (!Number.isFinite(next)) return "0";
-  return next.toFixed(digits).replace(/\.00$/, "");
-}
-
-function formatKilobytes(bytes) {
-  return `${formatNumber(Number(bytes) / 1024, 0)} KB`;
-}
-
-function activePlan() {
-  return tutorState.plan;
-}
-
-function isAnalyticPlan(plan = activePlan()) {
-  return plan?.experienceMode === "analytic_auto";
-}
-
-function currentSceneMoment(plan = activePlan()) {
-  if (!plan?.sceneMoments?.length) return null;
-  const currentStepId = tutorState.getCurrentStep()?.id || null;
-  return plan.sceneMoments.find((moment) => moment.id === currentStepId)
-    || plan.sceneMoments[Math.min(tutorState.currentStep, plan.sceneMoments.length - 1)]
-    || plan.sceneMoments[0]
-    || null;
-}
-
-function firstCompanionObjectId(plan = activePlan()) {
-  return (plan?.objectSuggestions || [])
-    .find((suggestion) => supports2dCompanionShape(suggestion?.object?.shape))
-    ?.object?.id || null;
-}
-
-function defaultRepresentationDirective(plan = activePlan()) {
-  const representationMode = plan?.representationMode || "3d";
-  const companionObjectId = representationMode === "3d" ? null : firstCompanionObjectId(plan);
-  const resolvedMode = companionObjectId ? representationMode : "3d";
-  return {
-    representationMode: resolvedMode,
-    companionObjectId,
-    companionTitle: resolvedMode === "2d" ? "2D Lesson View" : resolvedMode === "split_2d" ? "2D Companion" : "",
-    companionReason: resolvedMode === "2d"
-      ? "A flat view makes the surface relationship easier to compare directly."
-      : resolvedMode === "split_2d"
-        ? "Keep the solid visible while the 2D net shows how each face contributes."
-        : "",
-  };
-}
-
-function isLessonComplete() {
-  return Boolean(tutorState.completionState?.complete);
-}
-
-function completionPromptKey(plan = activePlan(), suggestions = tutorState.similarQuestions || []) {
-  if (!plan) return "";
-  return `${plan.problem?.id || "plan"}:${plan.problem?.question || ""}:${suggestions.map((item) => item.prompt).join("|")}`;
-}
-
-function currentSnapshot() {
-  return sceneApi?.snapshot?.() || { objects: [], selectedObjectId: null };
-}
-
-function selectedSceneObject(snapshot = currentSnapshot()) {
-  const selectedObjectId = snapshot?.selectedObjectId || sceneApi?.getSelection?.() || null;
-  return selectedObjectId ? sceneApi?.getObject?.(selectedObjectId) || null : null;
-}
-
-function selectedObjectContext(snapshot = currentSnapshot()) {
-  const objectSpec = selectedSceneObject(snapshot);
-  if (!objectSpec) return null;
-
-  return {
-    id: objectSpec.id,
-    label: objectSpec.label || objectSpec.shape,
-    shape: objectSpec.shape,
-    params: objectSpec.params,
-    metrics: computeGeometry(objectSpec.shape, objectSpec.params),
-  };
-}
-
-function switchToTab(tabName) {
-  document.querySelectorAll(".panel-tab").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tab === tabName);
-  });
-  document.querySelectorAll(".tab-content").forEach((content) => {
-    content.classList.toggle("active", content.dataset.content === tabName);
-  });
-}
-
-function escapeHtml(value = "") {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function transcriptMessageTextNode(message) {
-  return message?.querySelector(".chat-msg-text") || null;
-}
-
-function renderChatMessageHtml(content = "", options = {}) {
-  const role = options.role || "tutor";
-  const normalized = role === "tutor"
-    ? normalizeTutorReplyText(content)
-    : String(content || "").replace(/\r\n?/g, "\n").trim();
-  return renderRichTextHtml(normalized);
-}
-
-function setTranscriptMessageText(message, content, options = {}) {
-  const node = transcriptMessageTextNode(message);
-  if (node) {
-    const role = options.role || message?.dataset?.role || "tutor";
-    node.innerHTML = renderChatMessageHtml(content, { role });
-  }
-}
-
-function resizeChatComposer() {
-  if (!chatInput) return;
-  chatInput.style.height = "0px";
-  const nextHeight = Math.min(Math.max(chatInput.scrollHeight, 34), 132);
-  chatInput.style.height = `${nextHeight}px`;
-}
-
-function updateMathPreview(previewEl, content = "") {
-  if (!previewEl) return;
-  const normalized = String(content || "").trim();
-  const shouldShow = Boolean(normalized) && hasMathMarkup(normalized);
-  previewEl.classList.toggle("hidden", !shouldShow);
-  previewEl.innerHTML = shouldShow ? renderRichTextHtml(normalized) : "";
-}
-
-function normalizeTutorActionStateInput(actionStateInput = [], fallback = {}) {
-  if (Array.isArray(actionStateInput)) {
-    return {
-      actions: actionStateInput,
-      stageType: fallback.stageType || "orient",
-      lastVerdict: fallback.lastVerdict || null,
-    };
-  }
-
-  return {
-    actions: Array.isArray(actionStateInput?.actions) ? actionStateInput.actions : [],
-    stageType: actionStateInput?.stageType || fallback.stageType || "orient",
-    lastVerdict: actionStateInput?.lastVerdict || fallback.lastVerdict || null,
-  };
-}
-
-const AFFIRMATION_PATTERN = /\b(excellent|perfect|great|well done|exactly|correct|nice work|good job|that's right|spot on|brilliant|fantastic|wonderful|nicely done|you got it|right)\b/i;
-
-function looksLikeAffirmation(text = "") {
-  const firstSentence = String(text || "").split(/[.!?\n]/)[0] || "";
-  return AFFIRMATION_PATTERN.test(firstSentence);
-}
-
-function scheduleLessonAutoAdvance(message, actionState = {}, responseText = "") {
-  clearLessonAutoAdvanceTimer();
-  const plan = activePlan();
-  if (!message || !plan || isLessonComplete()) return;
-
-  const hasShowConnection = actionState.actions?.some((action) => action.id === "show_connection");
-  if (actionState.lastVerdict !== "CORRECT" || !hasShowConnection || !isAutoAdvanceEnabled(plan)) {
-    return;
-  }
-
-  const msgText = responseText || message?.querySelector?.(".chat-msg-bubble")?.textContent || "";
-  const affirmed = looksLikeAffirmation(msgText);
-  lessonAutoAdvanceTimer = window.setTimeout(() => {
-    if (latestTutorActionMessage !== message) return;
-    if (affirmed) {
-      renderMessageActions(message, { ...actionState, actions: [] });
-      advanceLessonStage();
-    } else {
-      handleTutorAction({ kind: "show_connection" });
-    }
-  }, affirmed ? 2000 : 1500);
-}
-
-function renderMessageActions(message, actionStateInput = [], responseText = "") {
-  if (!message) return;
-  const fallbackStage = getCurrentStage()?.learningStage || tutorState.learningStage || "orient";
-  const actionState = normalizeTutorActionStateInput(actionStateInput, {
-    stageType: fallbackStage,
-    lastVerdict: null,
   });
 
-  clearLessonAutoAdvanceTimer();
-  chatMessages?.querySelectorAll(".tutor-actions").forEach((row) => row.remove());
-  latestTutorActionMessage = message;
-  latestTutorActionState = {
-    actions: actionState.actions.map((action) => ({ ...action })),
-    stageType: actionState.stageType,
-    lastVerdict: actionState.lastVerdict,
-  };
-  if (!actionState.actions.length) return;
-
-  const row = document.createElement("div");
-  row.className = "tutor-actions";
-  row.dataset.stage = String(actionState.stageType || "orient").toLowerCase();
-  row.dataset.verdict = String(actionState.lastVerdict || "none").toLowerCase();
-  actionState.actions.forEach((action) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `tutor-btn tutor-btn--${action.style || "secondary"}`;
-    button.dataset.action = action.id;
-    button.textContent = action.label;
-    button.addEventListener("click", () => handleTutorAction(action));
-    row.appendChild(button);
-  });
-  message.querySelector(".chat-msg-bubble")?.appendChild(row);
-  scheduleLessonAutoAdvance(message, actionState, responseText);
-}
-
-function addTranscriptMessage(role, content, options = {}) {
-  if (!chatMessages) return null;
-  chatMessages.querySelector(".chat-welcome")?.remove();
-
-  const message = document.createElement("div");
-  message.className = `chat-msg is-${role}`;
-  message.dataset.role = role;
-  message.dataset.completion = options.completion ? "true" : "false";
-
-  const bubble = document.createElement("div");
-  bubble.className = "chat-msg-bubble";
-
-  const text = document.createElement("div");
-  text.className = "chat-msg-text";
-  text.innerHTML = renderChatMessageHtml(content, {
-    role,
-    completion: Boolean(options.completion),
+  // explore → fires on first OrbitControls change after scene loads
+  window.addEventListener('sceneOrbitChange', () => {
+    if (state.momentComplete.observe && !state.momentComplete.explore) {
+      advanceMoment('explore');
+    }
   });
 
-  bubble.appendChild(text);
-  message.appendChild(bubble);
-  chatMessages.appendChild(message);
-
-  if (options.actions?.length) {
-    renderMessageActions(message, options.actions);
-  } else if (options.actions && !Array.isArray(options.actions)) {
-    renderMessageActions(message, options.actions);
-  }
-
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-  return message;
-}
-
-function clearTranscript() {
-  if (!chatMessages) return;
-  chatMessages.innerHTML = `
-    <div class="chat-welcome">
-      <p class="chat-welcome-title">Let's explore together</p>
-      <p class="chat-welcome-text">Ask a question, talk about the current scene, or say "show me something cool" and I'll build a math visual.</p>
-    </div>
-  `;
-
-  // Hide post-lesson stats: reset panel to in-lesson state
-  const rightPanel = document.getElementById("rightPanel");
-  if (rightPanel) {
-    rightPanel.classList.remove("panel-post-lesson");
-    rightPanel.classList.add("panel-in-lesson");
-  }
-
-  // Hide cognitive console
-  const cogConsole = document.querySelector("#cognitiveConsole");
-  if (cogConsole) {
-    cogConsole.classList.add("hidden");
-    const allNodes = cogConsole.querySelectorAll(".agent-node");
-    allNodes.forEach(node => {
-      node.classList.remove("thinking");
-      const statusEl = node.querySelector(".agent-status");
-      if (statusEl) statusEl.textContent = "Waiting...";
-    });
-    const logs = cogConsole.querySelectorAll("[id^=agentLog-]");
-    logs.forEach(log => log.textContent = "");
-  }
-}
-
-function setQuestionStatus(text = "", tone = "hidden") {
-  if (!questionStatus) return;
-  questionStatus.textContent = text;
-  questionStatus.className = "question-status";
-  if (!text || tone === "hidden") {
-    questionStatus.classList.add("hidden");
-    return;
-  }
-  if (tone === "loading") questionStatus.classList.add("is-loading");
-  if (tone === "error") questionStatus.classList.add("is-error");
-}
-
-function updateVoiceStatus(text = "", tone = "muted") {
-  if (!voiceStatus) return;
-  voiceStatus.textContent = text;
-  voiceStatus.className = "voice-status-text";
-  voiceStatus.style.color = "";
-  if (!text || tone === "hidden") {
-    voiceStatus.classList.add("hidden");
-    return;
-  }
-  voiceStatus.classList.remove("hidden");
-  if (tone === "ready") voiceStatus.style.color = "var(--accent)";
-  if (tone === "error") voiceStatus.style.color = "var(--danger)";
-}
-
-function setVoiceButtonState({ active = voiceModeEnabled, disabled = false } = {}) {
-  if (!voiceRecordBtn) return;
-  voiceRecordBtn.disabled = disabled;
-  voiceRecordBtn.classList.toggle("is-recording", active);
-  voiceRecordBtn.textContent = active ? "\u25A0" : "\u{1F3A4}";
-  voiceRecordBtn.setAttribute("aria-pressed", String(active));
-  voiceRecordBtn.setAttribute("aria-label", active ? "Turn voice mode off" : "Turn voice mode on");
-}
-
-function updateVoiceVisualState(state = "idle") {
-  if (voiceControl) {
-    voiceControl.classList.remove("voice--listening", "voice--processing", "voice--responding");
-    if (state !== "idle") {
-      voiceControl.classList.add(`voice--${state}`);
+  // predict → fires when student gives correct answer
+  socraticCoachEvents.addEventListener('correctAnswer', () => {
+    if (state.momentComplete.explore && !state.momentComplete.predict) {
+      advanceMoment('predict');
     }
-  }
-  if (voiceBars) {
-    voiceBars.style.display = state === "responding" ? "flex" : "none";
-  }
-}
+    // Highlight solved objects in world
+    window.world?.highlightObject?.('all_solved', 'success');
+  });
 
-// Browser TTS replaces PcmAudioPlayer — no PCM player needed
-function ensureVoiceAudioPlayer() {
-  return {
-    appendBase64Chunk: async () => {},
-    stop: () => {},
-    clear: () => {}
-  };
-}
+  // forceCalculation → fires after 3 Socratic questions
+  socraticCoachEvents.addEventListener('forceCalculation', () => {
+    _triggerForceAnswer();
+  });
 
-function localVoicePlaybackActive() {
-  // Browser TTS does not expose a playback state — assume not blocking
-  return false;
-}
-
-function showVoicePlaybackStatus() {
-  updateVoiceVisualState("responding");
-  updateVoiceStatus("ImmersiveSense is responding...", "ready");
-}
-
-function queueVoicePlaybackRelease() {
-  const player = voiceAudioPlayer;
-  if (!player) {
-    voiceAssistantBargeInUnlockAt = performance.now() + 320;
-    if (!voiceTurnOpen && !voiceUserSpeaking) {
-      setVoiceStatusForState("idle");
-    }
-    return;
-  }
-
-  const syncToken = ++voicePlaybackSyncToken;
-  player.whenIdle().then(() => {
-    if (syncToken !== voicePlaybackSyncToken) {
-      return;
-    }
-    voiceAssistantBargeInUnlockAt = performance.now() + 320;
-    if (!voiceTurnOpen && !voiceUserSpeaking) {
-      setVoiceStatusForState("idle");
-    }
-  }).catch(() => {
-    if (syncToken !== voicePlaybackSyncToken) {
-      return;
-    }
-    voiceAssistantBargeInUnlockAt = performance.now() + 320;
-    if (!voiceTurnOpen && !voiceUserSpeaking) {
-      setVoiceStatusForState("idle");
+  // verify → fires when full answer is shown
+  window.addEventListener('answerRevealed', () => {
+    if (state.momentComplete.predict && !state.momentComplete.verify) {
+      advanceMoment('verify');
     }
   });
 }
 
-function canInterruptAssistantWithSpeech(level = 0) {
-  if (localVoicePlaybackActive()) {
-    return false;
-  }
-  if (performance.now() < voiceAssistantBargeInUnlockAt) {
-    return false;
-  }
-  if (voiceSessionState === "responding") {
-    return Number(level) >= 0.06;
-  }
-  return true;
-}
-
-function resetVoiceDraft() {
-  voiceStreamDraft = {
-    userMessage: null,
-    assistantMessage: null,
-    inputTranscript: "",
-    assistantPreviewText: "",
-    assistantFinalText: "",
-    assistantAudioStarted: false,
-  };
-  return voiceStreamDraft;
-}
-
-function currentVoiceDraft() {
-  return voiceStreamDraft || resetVoiceDraft();
-}
-
-function rememberVoiceBufferedChunk(chunk) {
-  if (!chunk?.audioBase64) return;
-  voiceBufferedChunks.push(chunk);
-  if (voiceBufferedChunks.length > 4) {
-    voiceBufferedChunks = voiceBufferedChunks.slice(-4);
-  }
-}
-
-function clearVoiceBufferedChunks() {
-  voiceBufferedChunks = [];
-}
-
-function setVoiceTranscript(content = "") {
-  const draft = currentVoiceDraft();
-  const transcript = String(content || "").trim();
-  draft.inputTranscript = transcript;
-  lastVoiceTranscript = transcript;
-  if (!transcript) return;
-  if (!draft.userMessage) {
-    draft.userMessage = addTranscriptMessage("user", transcript);
-    return;
-  }
-  setTranscriptMessageText(draft.userMessage, transcript, { role: "user" });
-}
-
-function setVoiceAssistantMessage(content = "", { final = false } = {}) {
-  const draft = currentVoiceDraft();
-  const nextContent = String(content || "").trim();
-  if (!nextContent) return;
-  if (final) {
-    draft.assistantFinalText = nextContent;
-  } else {
-    draft.assistantPreviewText = nextContent;
-  }
-  const messageText = draft.assistantFinalText || draft.assistantPreviewText;
-  if (!draft.assistantMessage) {
-    draft.assistantMessage = addTranscriptMessage("tutor", messageText);
-    return;
-  }
-  setTranscriptMessageText(draft.assistantMessage, messageText, {
-    role: "tutor",
-    completion: false,
+function _bindSocraticEvents() {
+  socraticCoachEvents.addEventListener('confusion', (e) => {
+    const { state: confState } = e.detail;
+    if (confState === 'CONFUSED' || confState === 'HESITANT') {
+      _showConfusionAlert(confState);
+    }
   });
 }
 
-function closeVoiceSessionStream() {
-  voiceSessionUnsubscribe?.();
-  voiceSessionUnsubscribe = null;
-}
+function _bindSendButton() {
+  const sendBtn = document.getElementById('sendBtn');
+  const chatInput = document.getElementById('chatInput');
+  if (!sendBtn || !chatInput) return;
 
-async function resetVoiceSessionState() {
-  closeVoiceSessionStream();
-  voiceConversationId = null;
-  voiceStreamDraft = null;
-  voiceAudioUploadChain = Promise.resolve();
-  voiceModeTogglePromise = null;
-  voiceTurnStartPromise = null;
-  voiceModeEnabled = false;
-  voiceTurnOpen = false;
-  voiceUserSpeaking = false;
-  voiceSessionState = "idle";
-  clearVoiceBufferedChunks();
-  voiceAssistantBargeInUnlockAt = 0;
-  voicePlaybackSyncToken += 1;
-  if (activeMicCapture) {
-    await activeMicCapture.stop();
-    activeMicCapture = null;
-  }
-  setVoiceButtonState({ active: false });
-  cancelBrowserTTS();
-  updateVoiceStatus("", "hidden");
-}
-
-function revokeQuestionPreview() {
-  if (questionImagePreviewUrl) {
-    URL.revokeObjectURL(questionImagePreviewUrl);
-    questionImagePreviewUrl = null;
-  }
-}
-
-function renderQuestionImageState() {
-  const hasImage = Boolean(questionImageFile);
-  questionImageMeta?.classList.toggle("hidden", !hasImage);
-  questionImagePreview?.classList.toggle("hidden", !hasImage);
-  questionImageClear?.classList.toggle("hidden", !hasImage);
-
-  if (!hasImage) {
-    if (questionImageMeta) questionImageMeta.textContent = "";
-    questionImageThumb?.removeAttribute("src");
-    revokeQuestionPreview();
-    return;
-  }
-
-  if (questionImageMeta) {
-    questionImageMeta.textContent = `${questionImageFile.name} - ${formatKilobytes(questionImageFile.size)}`;
-  }
-  revokeQuestionPreview();
-  questionImagePreviewUrl = URL.createObjectURL(questionImageFile);
-  if (questionImageThumb) {
-    questionImageThumb.src = questionImagePreviewUrl;
-  }
-}
-
-function validateQuestionImage(file) {
-  if (!file) return null;
-  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-    return "Only PNG, JPEG, and WEBP diagrams are supported.";
-  }
-  if (file.size > 3.75 * 1024 * 1024) {
-    return "Uploaded diagram must be 3.75 MB or smaller.";
-  }
-  return null;
-}
-
-function setQuestionImageFile(file, { announcePaste = false } = {}) {
-  const errorMessage = validateQuestionImage(file);
-  if (errorMessage) {
-    questionImageFile = null;
-    if (questionImageInput) questionImageInput.value = "";
-    renderQuestionImageState();
-    setQuestionStatus(errorMessage, "error");
-    return false;
-  }
-
-  questionImageFile = file || null;
-  if (questionImageInput && !file) {
-    questionImageInput.value = "";
-  }
-  renderQuestionImageState();
-  setQuestionPanelCollapsed(questionSection?.classList.contains("is-collapsed"), { force: true });
-  setQuestionStatus(
-    announcePaste && file ? `Pasted image ready: ${file.name}` : "",
-    announcePaste && file ? "loading" : "hidden"
-  );
-  return true;
-}
-
-function lessonPanelSummaryText() {
-  const plan = activePlan();
-  const planQuestion = plan?.sourceSummary?.cleanedQuestion || plan?.problem?.question || "";
-  const promptText = questionInput?.value?.trim() || "";
-  const imageSummary = questionImageFile?.name ? `Diagram: ${questionImageFile.name}` : "";
-  return planQuestion || promptText || imageSummary || "Edit the prompt or upload a different diagram.";
-}
-
-function setQuestionPanelCollapsed(collapsed, { force = false } = {}) {
-  const canCollapse = Boolean(activePlan());
-  const nextCollapsed = Boolean(collapsed && canCollapse);
-
-  if (!force && !canCollapse) {
-    questionSection?.classList.remove("is-collapsed");
-    questionSection?.setAttribute("data-collapsible", "false");
-    lessonPanelToggle?.setAttribute("aria-expanded", "true");
-    lessonPanelSummary?.classList.add("hidden");
-    return;
-  }
-
-  questionSection?.classList.toggle("is-collapsed", nextCollapsed);
-  questionSection?.setAttribute("data-collapsible", String(canCollapse));
-  lessonPanelToggle?.setAttribute("aria-expanded", String(!nextCollapsed));
-  if (lessonPanelSummary) {
-    lessonPanelSummary.textContent = lessonPanelSummaryText();
-    lessonPanelSummary.classList.toggle("hidden", !nextCollapsed);
-  }
-  newQuestionBtn?.classList.toggle("hidden", !nextCollapsed);
-}
-
-function currentLessonStage(plan = activePlan()) {
-  if (!plan?.lessonStages?.length) return null;
-  const currentStepId = tutorState.getCurrentStep()?.id || null;
-  return plan.lessonStages.find((stage) => stage.id === currentStepId)
-    || plan.lessonStages[Math.min(tutorState.currentStep, plan.lessonStages.length - 1)]
-    || plan.lessonStages[0]
-    || null;
-}
-
-function learningMomentStage(stageKey, plan = activePlan()) {
-  if (!plan || !stageKey) return null;
-  const moment = plan.learningMoments?.[stageKey] || {};
-  return {
-    id: `${stageKey}-stage`,
-    learningStage: stageKey,
-    title: moment.title || stageKey,
-    goal: moment.goal || "",
-    checkpointPrompt: moment.prompt || "",
-    checkpoint: moment.prompt ? { prompt: moment.prompt } : null,
-    requires_evaluation: ["predict", "check", "reflect"].includes(stageKey),
-  };
-}
-
-function getCurrentStage(plan = activePlan()) {
-  if (!plan) return null;
-  if (["predict", "check", "reflect", "challenge"].includes(tutorState.learningStage)) {
-    return learningMomentStage(tutorState.learningStage, plan);
-  }
-  const lessonStage = currentLessonStage(plan);
-  if (!lessonStage) return null;
-  return {
-    ...lessonStage,
-    learningStage: lessonStage.learningStage || tutorState.learningStage,
-    checkpoint: lessonStage.checkpoint || (lessonStage.checkpointPrompt ? { prompt: lessonStage.checkpointPrompt } : null),
-  };
-}
-
-function currentStageIndex(plan = activePlan()) {
-  const stage = currentLessonStage(plan);
-  if (!stage || !plan?.lessonStages?.length) return -1;
-  return Math.max(0, plan.lessonStages.findIndex((candidate) => candidate.id === stage.id));
-}
-
-function currentStageKey(plan = activePlan()) {
-  const stage = currentLessonStage(plan);
-  return `${tutorState.learningStage}:${stage?.id || "none"}`;
-}
-
-function nextRequiredSuggestion(plan = activePlan(), assessment = tutorState.latestAssessment) {
-  const suggestionId = assessment?.guidance?.nextRequiredSuggestionIds?.[0] || null;
-  return suggestionId
-    ? plan?.objectSuggestions?.find((suggestion) => suggestion.id === suggestionId) || null
-    : null;
-}
-
-function stageFocusTargets(plan = activePlan(), assessment = tutorState.latestAssessment) {
-  const stage = currentLessonStage(plan);
-  if (stage?.highlightTargets?.length) {
-    return stage.highlightTargets;
-  }
-  const suggestion = nextRequiredSuggestion(plan, assessment);
-  return suggestion?.object?.id ? [suggestion.object.id] : [];
-}
-
-function fillPreviewActionObjectSpec(action, plan = activePlan(), assessment = tutorState.latestAssessment) {
-  if (!action || action.kind !== "preview-required-object") return action;
-  if (action.payload?.objectSpec) return action;
-
-  const suggestionId = action.payload?.suggestionId || nextRequiredSuggestion(plan, assessment)?.id || null;
-  if (!suggestionId) return action;
-
-  const suggestion = plan?.objectSuggestions?.find((candidate) => candidate.id === suggestionId) || null;
-  if (!suggestion) return action;
-
-  return {
-    ...action,
-    payload: {
-      ...(action.payload || {}),
-      suggestionId,
-      objectSpec: suggestion.object,
-      highlightTargets: action.payload?.highlightTargets?.length
-        ? action.payload.highlightTargets
-        : [suggestion.object.id],
-    },
-  };
-}
-
-function stageActionsForClient(plan = activePlan(), _assessment = tutorState.latestAssessment) {
-  if (!plan) return { actions: [], stageType: "orient", lastVerdict: null };
-  const stage = getCurrentStage(plan);
-  const learningState = tutorState.snapshot();
-  const currentVerdict = currentVerdictEntry(learningState);
-  const responseKind = isLessonComplete()
-    ? "lesson_complete"
-    : currentVerdict?.verdict
-      ? "verdict"
-      : stage?.requires_evaluation === false
-        ? "non_evaluated"
-        : "stage_opening";
-  return resolveTutorActionState({
-    plan,
-    stage,
-    learningState,
-    conceptVerdict: currentVerdict,
-    completionState: tutorState.completionState,
-    responseKind,
+  sendBtn.addEventListener('click', () => {
+    const q = chatInput.value.trim();
+    if (!q) return;
+    chatInput.value = '';
+    chatInput.style.height = 'auto';
+    _handleUserMessage(q);
   });
 }
 
-function buildSystemContextMessage(plan = activePlan()) {
-  if (!plan) return "";
-  const evidence = plan.sourceEvidence || {};
-  const source = evidence.diagramSummary || "Using the typed prompt as the source.";
-  const givens = evidence.givens?.length ? ` Givens: ${evidence.givens.join(", ")}.` : "";
-  const conflicts = evidence.conflicts?.length ? ` Check this mismatch: ${evidence.conflicts.join(" ")}` : "";
-  const analytic = isAnalyticPlan(plan)
-    ? ` ImmersiveSense auto-drew the scene for ${plan.analyticContext?.subtype?.replaceAll("_", " ") || "analytic geometry"}.`
-    : "";
-  return `${source}${givens}${conflicts}${analytic}`.trim();
-}
-
-function buildStageIntroMessage(plan = activePlan(), assessment = tutorState.latestAssessment) {
-  if (!plan) return "";
-
-  const learningStage = tutorState.learningStage;
-  const stage = currentLessonStage(plan);
-
-  if (isAnalyticPlan(plan) && stage) {
-    const moment = currentSceneMoment(plan);
-    return moment?.prompt || stage.tutorIntro || stage.goal || "Take a look at the scene. What stands out to you?";
-  }
-
-  if ((learningStage === "orient" || learningStage === "build") && stage) {
-    const intro = stage.tutorIntro || stage.goal || "";
-    const question = assessment?.guidance?.coachFeedback || lastSceneFeedback || "";
-    const representationHint = plan?.representationMode !== "3d"
-      ? "Use the 2D companion to compare the surface pieces as you look at the solid."
-      : "";
-    return [intro, question, representationHint]
-      .filter(Boolean)
-      .join(" ")
-      .trim() || "Look at the scene. What do you notice?";
-  }
-
-  if (learningStage === "predict") {
-    const moment = plan.learningMoments?.predict || {};
-    return moment.prompt || "Before we go further, what's your gut feeling about what happens here?";
-  }
-
-  if (learningStage === "check") {
-    return "Now look at the scene. Does it match what you expected?";
-  }
-
-  if (learningStage === "reflect") {
-    return "In your own words, what's the key idea you just saw?";
-  }
-
-  return "The scene is yours to explore. What are you curious about?";
-}
-
-function stagePayloadForClient(stage = null) {
-  if (!stage) return null;
-  return {
-    ...stage,
-    checkpoint: stage.checkpoint || (stage.checkpointPrompt ? { prompt: stage.checkpointPrompt } : null),
-  };
-}
-
-function applyDeferredStageAdvanceOverride(response = {}, plan = activePlan(), { consumedLearnerInput = false } = {}) {
-  if (!plan || !isAnalyticPlan(plan)) {
-    deferredStageAdvance = null;
-    return response;
-  }
-
-  const currentStageId = response?.stageStatus?.currentStageId
-    || response?.assessment?.nextStage?.id
-    || tutorState.getCurrentStep()?.id
-    || "";
-  const stageProgress = response?.assessment?.stageProgress || response?.stageProgress || {};
-  const decision = resolveDeferredStageAdvance({
-    pendingAdvance: deferredStageAdvance,
-    plan,
-    currentStageId,
-    backendSaidNo: stageProgress.layer2Decision === "NO" && stageProgress.shouldProgress === false,
-    backendProgressed: Boolean(stageProgress.shouldProgress),
-    consumedLearnerInput,
-    randomFn: Math.random,
-  });
-  deferredStageAdvance = decision.pendingAdvance;
-
-  if (!decision.overrideStageId) {
-    return response;
-  }
-
-  const targetStage = plan.lessonStages?.find((stage) => stage.id === decision.overrideStageId) || null;
-  if (!targetStage) {
-    return response;
-  }
-
-  const targetMoment = plan.sceneMoments?.find((moment) => moment.id === decision.overrideStageId) || null;
-  const nextLearningStage = response.nextLearningStage || response.assessment?.nextLearningStage || tutorState.learningStage;
-  response.stageStatus = {
-    ...(response.stageStatus || {}),
-    currentStageId: targetStage.id,
-  };
-  if (response.assessment) {
-    response.assessment = {
-      ...response.assessment,
-      nextStage: stagePayloadForClient(targetStage),
-      nextLearningStage,
-      stageProgress: {
-        ...(response.assessment.stageProgress || {}),
-        shouldProgress: true,
-        reason: response.assessment.stageProgress?.reason || "Deferred client-side advance after repeated blocked turns.",
-      },
-    };
-  }
-
-  if (targetMoment) {
-    const focusTargets = targetMoment.focusTargets?.length
-      ? targetMoment.focusTargets
-      : response.focusTargets || response.sceneDirective?.focusTargets || [];
-    response.focusTargets = focusTargets;
-    response.sceneDirective = {
-      ...(response.sceneDirective || {}),
-      stageId: targetMoment.id,
-      cameraBookmarkId: targetMoment.cameraBookmarkId || response.sceneDirective?.cameraBookmarkId || null,
-      focusTargets,
-      visibleObjectIds: targetMoment.visibleObjectIds || [],
-      visibleOverlayIds: targetMoment.visibleOverlayIds || [],
-      revealFormula: Boolean(targetMoment.revealFormula),
-      revealFullSolution: Boolean(targetMoment.revealFullSolution),
-      representationMode: targetMoment.representationMode
-        || response.sceneDirective?.representationMode
-        || defaultRepresentationDirective(plan).representationMode,
-    };
-  }
-
-  return response;
-}
-
-function normalizedTranscriptSnippet(text = "") {
-  return normalizeTutorReplyText(text)
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function shouldAnnounceStageAfterResponse(responseText = "", plan = activePlan()) {
-  if (!plan || !isAnalyticPlan(plan)) return true;
-  const stageIntro = buildStageIntroMessage(plan);
-  const normalizedResponse = normalizedTranscriptSnippet(responseText);
-  const normalizedStageIntro = normalizedTranscriptSnippet(stageIntro);
-  if (!normalizedResponse || !normalizedStageIntro) return true;
-  return !normalizedResponse.includes(normalizedStageIntro);
-}
-
-function updateComposerState() {
-  const hasPlan = Boolean(activePlan());
-  if (chatInput) {
-    chatInput.disabled = !awaitingLearnerResponse;
-    if (!hasPlan) {
-      chatInput.placeholder = "Chat, ask about the scene, or say 'show me something cool'";
-    } else if (isLessonComplete()) {
-      chatInput.placeholder = "Ask a follow-up, or type a new math question";
-    } else if (tutorState.learningStage === "predict" && !tutorState.predictionState.submitted) {
-      chatInput.placeholder = "What's your prediction?";
-    } else {
-      chatInput.placeholder = "What do you think happens next?";
-    }
-  }
-  if (chatSend) chatSend.disabled = !awaitingLearnerResponse;
-  setVoiceButtonState({ active: voiceModeEnabled, disabled: !awaitingLearnerResponse });
-}
-
-function setCheckpointState(checkpoint = null) {
-  if (!chatCheckpoint || !chatCheckpointPrompt) return;
-  if (!checkpoint) {
-    chatCheckpoint.classList.add("hidden");
-    chatCheckpointPrompt.textContent = "";
-    return;
-  }
-  chatCheckpoint.classList.remove("hidden");
-  chatCheckpointPrompt.textContent = checkpoint.prompt || "Does this look correct?";
-}
-
-async function fetchSimilarQuestionsOnce() {
-  const plan = activePlan();
-  const requestedPlanKey = completionPromptKey(plan, []);
-  if (!plan || !isLessonComplete()) return;
-  if (tutorState.similarQuestions?.length) {
-    return;
-  }
-  if (similarQuestionRequest) {
-    await similarQuestionRequest;
-    return;
-  }
-
-  similarQuestionRequest = requestSimilarTutorQuestions({ plan, limit: 3 })
-    .then((payload) => {
-      if (completionPromptKey(activePlan(), []) !== requestedPlanKey) return;
-      tutorState.setSimilarQuestions(payload?.suggestions || []);
-    })
-    .catch((error) => {
-      console.error("Similar tutor questions failed:", error);
-      tutorState.setSimilarQuestions([]);
-    })
-    .finally(() => {
-      similarQuestionRequest = null;
-    });
-
-  await similarQuestionRequest;
-}
-
-function completeLesson({ reason = "correct-answer", revealSolution = false } = {}) {
-  clearLessonAutoAdvanceTimer();
-  tutorState.setCompletionState({ complete: true, reason });
-  tutorState.setPhase("complete");
-  tutorState.setSimilarQuestions(tutorState.similarQuestions || []);
-  setCheckpointState(null);
-  if (revealSolution) {
-    analyticFormulaVisible = true;
-    analyticFullSolutionVisible = true;
-    analyticFormulaDismissed = false;
-  }
-  updateStageRail();
-  renderAssessment(tutorState.latestAssessment);
-  renderSceneInfo();
-  void fetchSimilarQuestionsOnce();
-
-  // Reveal post-lesson stats panel: session summary, mastery bars, cognitive console
-  const rightPanel = document.getElementById("rightPanel");
-  if (rightPanel) {
-    rightPanel.classList.remove("panel-in-lesson");
-    rightPanel.classList.add("panel-post-lesson");
-  }
-  const cogConsole = document.querySelector("#cognitiveConsole");
-  if (cogConsole) {
-    cogConsole.classList.remove("hidden");
-  }
-}
-
-function normalizeSolutionText(value = "") {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
-function formatSolutionNumber(value, digits = 2) {
-  const next = Number(value);
-  if (!Number.isFinite(next)) return "0";
-  const rounded = Number(next.toFixed(digits));
-  return Number.isInteger(rounded)
-    ? String(rounded)
-    : rounded.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function solutionSourceText(plan = activePlan()) {
-  const givens = Array.isArray(plan?.sourceSummary?.givens) ? plan.sourceSummary.givens : [];
-  return [
-    plan?.sourceSummary?.cleanedQuestion,
-    plan?.problem?.question,
-    ...givens,
-  ].filter(Boolean).join(" ");
-}
-
-function parsePointMap(text = "") {
-  const points = new Map();
-  const pointPattern = /\b([A-Z])\s*\(\s*([-+]?\d*\.?\d+(?:\s*,\s*[-+]?\d*\.?\d+){2})\s*\)/g;
-  let match = pointPattern.exec(text);
-  while (match) {
-    const label = match[1];
-    const coordinates = match[2]
-      .split(/\s*,\s*/)
-      .map((value) => Number(value));
-    if (coordinates.length === 3 && coordinates.every((value) => Number.isFinite(value))) {
-      points.set(label, coordinates);
-    }
-    match = pointPattern.exec(text);
-  }
-  return points;
-}
-
-function parseVectorLabels(text = "") {
-  const patterns = [
-    /angle between (?:two |the )?(?:vectors?|lines?)\s+([A-Z]{2})\s*(?:,|and)\s*([A-Z]{2})/i,
-    /vectors?\s+([A-Z]{2})\s*(?:,|and)\s*([A-Z]{2})/i,
-    /lines?\s+([A-Z]{2})\s*(?:,|and)\s*([A-Z]{2})/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return [match[1].toUpperCase(), match[2].toUpperCase()];
-    }
-  }
-
-  return [null, null];
-}
-
-function vectorFromPoints(start = [], end = []) {
-  if (!Array.isArray(start) || !Array.isArray(end) || start.length !== 3 || end.length !== 3) {
-    return null;
-  }
-  return end.map((value, index) => Number(value) - Number(start[index]));
-}
-
-function parenthesizedValueTex(value) {
-  const formatted = formatSolutionNumber(value);
-  return Number(value) < 0 ? `(${formatted})` : formatted;
-}
-
-function tupleTex(values = []) {
-  return `(${values.map((value) => formatSolutionNumber(value)).join(", ")})`;
-}
-
-function tuplePlain(values = []) {
-  return `(${values.map((value) => formatSolutionNumber(value)).join(", ")})`;
-}
-
-function differenceTupleTex(start = [], end = []) {
-  return `(${end.map((value, index) => `${formatSolutionNumber(value)}-${parenthesizedValueTex(start[index])}`).join(", ")})`;
-}
-
-function squaredTermsTex(values = []) {
-  return values.map((value) => `${parenthesizedValueTex(value)}^2`).join(" + ");
-}
-
-function squaredValuesTex(values = []) {
-  return values.map((value) => formatSolutionNumber(Number(value) ** 2)).join(" + ");
-}
-
-function signedTermsTex(values = []) {
-  return values.map((value, index) => {
-    const formatted = formatSolutionNumber(Math.abs(Number(value)));
-    if (index === 0) {
-      return Number(value) < 0 ? `-${formatted}` : formatted;
-    }
-    return Number(value) < 0 ? `- ${formatted}` : `+ ${formatted}`;
-  }).join(" ");
-}
-
-function vectorLabelTex(label = "") {
-  return `\\overrightarrow{${label}}`;
-}
-
-function angleAnswerTex(angleDegrees) {
-  return `\\theta = ${formatSolutionNumber(angleDegrees)}^\\circ`;
-}
-
-function buildLineLineSolutionSections(plan = activePlan()) {
-  const sourceText = solutionSourceText(plan);
-  const relationships = Array.isArray(plan?.sourceSummary?.relationships) ? plan.sourceSummary.relationships : [];
-  const looksLikeLineLine = relationships.includes("angle_type:line_line")
-    || /angle between (?:two |the )?(?:vectors?|lines?)/i.test(sourceText)
-    || /vectors?\s+[A-Z]{2}\s*(?:,|and)\s*[A-Z]{2}/i.test(sourceText);
-
-  if (!looksLikeLineLine) return [];
-
-  const points = parsePointMap(sourceText);
-  const [vectorOneLabel, vectorTwoLabel] = parseVectorLabels(sourceText);
-  if (!vectorOneLabel || !vectorTwoLabel) return [];
-
-  const [startOneLabel, endOneLabel] = vectorOneLabel.split("");
-  const [startTwoLabel, endTwoLabel] = vectorTwoLabel.split("");
-  const startOne = points.get(startOneLabel);
-  const endOne = points.get(endOneLabel);
-  const startTwo = points.get(startTwoLabel);
-  const endTwo = points.get(endTwoLabel);
-  if (!startOne || !endOne || !startTwo || !endTwo) return [];
-
-  const vectorOne = vectorFromPoints(startOne, endOne);
-  const vectorTwo = vectorFromPoints(startTwo, endTwo);
-  if (!vectorOne || !vectorTwo) return [];
-
-  const dotTerms = vectorOne.map((value, index) => Number(value) * Number(vectorTwo[index]));
-  const dotProduct = dotTerms.reduce((total, value) => total + value, 0);
-  const vectorOneSquareSum = vectorOne.reduce((total, value) => total + (Number(value) ** 2), 0);
-  const vectorTwoSquareSum = vectorTwo.reduce((total, value) => total + (Number(value) ** 2), 0);
-  const vectorOneMagnitude = Math.sqrt(vectorOneSquareSum);
-  const vectorTwoMagnitude = Math.sqrt(vectorTwoSquareSum);
-  const denominator = vectorOneMagnitude * vectorTwoMagnitude;
-  if (!denominator) return [];
-
-  const cosineValue = Math.max(-1, Math.min(1, dotProduct / denominator));
-  const angleDegrees = (Math.acos(cosineValue) * 180) / Math.PI;
-  const angleText = formatSolutionNumber(angleDegrees);
-  const isPerpendicular = Math.abs(cosineValue) < 1e-9;
-
-  return [
-    {
-      type: "prose",
-      text: `We need to find the angle theta between vectors ${vectorOneLabel} and ${vectorTwoLabel} using the dot product.`,
-    },
-    {
-      type: "formula",
-      label: "Formula",
-      tex: `\\theta = \\arccos\\left(\\frac{${vectorLabelTex(vectorOneLabel)} \\cdot ${vectorLabelTex(vectorTwoLabel)}}{|${vectorLabelTex(vectorOneLabel)}|\\,|${vectorLabelTex(vectorTwoLabel)}|}\\right)`,
-    },
-    {
-      type: "step",
-      label: "Step 1",
-      description: `Find vector ${vectorOneLabel}`,
-      tex: `${vectorLabelTex(vectorOneLabel)} = ${endOneLabel} - ${startOneLabel} = ${differenceTupleTex(startOne, endOne)} = ${tupleTex(vectorOne)}`,
-      result: tuplePlain(vectorOne),
-    },
-    {
-      type: "step",
-      label: "Step 2",
-      description: `Find vector ${vectorTwoLabel}`,
-      tex: `${vectorLabelTex(vectorTwoLabel)} = ${endTwoLabel} - ${startTwoLabel} = ${differenceTupleTex(startTwo, endTwo)} = ${tupleTex(vectorTwo)}`,
-      result: tuplePlain(vectorTwo),
-    },
-    {
-      type: "step",
-      label: "Step 3",
-      description: `Compute ${vectorOneLabel} dot ${vectorTwoLabel}`,
-      tex: `${vectorLabelTex(vectorOneLabel)} \\cdot ${vectorLabelTex(vectorTwoLabel)} = ${vectorOne.map((value, index) => `(${formatSolutionNumber(value)})(${formatSolutionNumber(vectorTwo[index])})`).join(" + ")} = ${signedTermsTex(dotTerms)} = ${formatSolutionNumber(dotProduct)}`,
-      result: formatSolutionNumber(dotProduct),
-    },
-    {
-      type: "step",
-      label: "Step 4",
-      description: `Compute |${vectorOneLabel}|`,
-      tex: `|${vectorLabelTex(vectorOneLabel)}| = \\sqrt{${squaredTermsTex(vectorOne)}} = \\sqrt{${squaredValuesTex(vectorOne)}} = \\sqrt{${formatSolutionNumber(vectorOneSquareSum)}}`,
-      result: `sqrt(${formatSolutionNumber(vectorOneSquareSum)}) approx ${formatSolutionNumber(vectorOneMagnitude)}`,
-    },
-    {
-      type: "step",
-      label: "Step 5",
-      description: `Compute |${vectorTwoLabel}|`,
-      tex: `|${vectorLabelTex(vectorTwoLabel)}| = \\sqrt{${squaredTermsTex(vectorTwo)}} = \\sqrt{${squaredValuesTex(vectorTwo)}} = \\sqrt{${formatSolutionNumber(vectorTwoSquareSum)}}`,
-      result: `sqrt(${formatSolutionNumber(vectorTwoSquareSum)}) approx ${formatSolutionNumber(vectorTwoMagnitude)}`,
-    },
-    {
-      type: "step",
-      label: "Step 6",
-      description: "Apply the formula",
-      tex: `\\theta = \\arccos\\left(\\frac{${formatSolutionNumber(dotProduct)}}{\\sqrt{${formatSolutionNumber(vectorOneSquareSum)}} \\cdot \\sqrt{${formatSolutionNumber(vectorTwoSquareSum)}}}\\right) = \\arccos(${formatSolutionNumber(cosineValue)}) = ${angleText}^\\circ`,
-      result: `${angleText} degrees`,
-    },
-    {
-      type: "answer",
-      label: "Final answer",
-      tex: angleAnswerTex(angleDegrees),
-      plain: isPerpendicular
-        ? `theta = ${angleText} degrees (the vectors are perpendicular)`
-        : `theta = ${angleText} degrees`,
-    },
-  ];
-}
-
-function buildGenericSolutionSections(plan = activePlan()) {
-  if (!plan) return [];
-
-  const analytic = plan.analyticContext || {};
-  const finalAnswer = formatPlanFinalAnswer(plan);
-  const sections = [];
-  const questionText = normalizeSolutionText(plan?.sourceSummary?.cleanedQuestion || plan?.problem?.question || "");
-  const formulaText = normalizeSolutionText(analytic.formulaCard?.formula || plan?.answerScaffold?.formula || "");
-
-  if (questionText) {
-    sections.push({
-      type: "prose",
-      text: `We need to solve: ${questionText}`,
-    });
-  }
-
-  if (formulaText) {
-    sections.push({
-      type: "formula",
-      label: "Formula",
-      tex: formulaText,
-    });
-  }
-
-  (analytic.solutionSteps || []).forEach((step, index) => {
-    const tex = normalizeSolutionText(step?.formula || "");
-    const description = normalizeSolutionText(step?.explanation || step?.title || "");
-    if (!tex && !description) return;
-    sections.push({
-      type: "step",
-      label: `Step ${index + 1}`,
-      description: description || `Work through ${step?.title || `step ${index + 1}`}.`,
-      tex,
-      result: null,
+function _bindTabSwitch() {
+  // handled inline in index.html but we also sync algebra tab
+  document.querySelectorAll('.ptab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      if (tab.dataset.tab === 'algebra') _renderAlgebraTab();
     });
   });
-
-  if (finalAnswer.text) {
-    sections.push({
-      type: "answer",
-      label: "Final answer",
-      tex: finalAnswer.text,
-      plain: `Final answer: ${finalAnswer.text}`,
-    });
-  }
-
-  return sections;
 }
 
-function solutionSectionsForPlan(plan = activePlan()) {
-  const lineLineSections = buildLineLineSolutionSections(plan);
-  if (lineLineSections.length) return lineLineSections;
-  return buildGenericSolutionSections(plan);
-}
-
-function renderSolutionSections(sections = []) {
-  return sections.map((section) => {
-    switch (section.type) {
-      case "prose":
-        return `<div class="solution-prose">${renderRichTextHtml(section.text || "")}</div>`;
-
-      case "formula":
-        return `
-          <div class="formula-card">
-            <span class="formula-label">${escapeHtml(section.label || "Formula")}</span>
-            <div class="formula-display">
-              ${renderMathBlockHtml(section.tex || "", { displayMode: true })}
-            </div>
-          </div>
-        `;
-
-      case "step":
-        return `
-          <div class="solution-step">
-            <span class="step-label">${escapeHtml(section.label || "Step")}</span>
-            <div class="step-description">${renderRichTextHtml(section.description || "")}</div>
-            ${section.tex
-              ? `<div class="step-math">${renderMathBlockHtml(section.tex, { displayMode: true })}</div>`
-              : ""}
-            ${section.result
-              ? `<span class="step-result">= ${escapeHtml(section.result)}</span>`
-              : ""}
-          </div>
-        `;
-
-      case "answer":
-        return `
-          <div class="solution-answer">
-            <span class="answer-label">${escapeHtml(section.label || "Final answer")}</span>
-            <div class="answer-math">
-              ${renderMathBlockHtml(section.tex || section.plain || "", { displayMode: true })}
-            </div>
-            ${section.plain ? `<div class="step-result">${renderRichTextHtml(section.plain)}</div>` : ""}
-          </div>
-        `;
-
-      default:
-        return "";
+async function _fetchInitialStudentModel() {
+  try {
+    const res = await fetch('/api/tutor/student-model');
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.studentModel) window.updateStudentModelUI?.(data.studentModel);
     }
-  }).join("");
+  } catch { /* offline or cold start */ }
 }
 
-function latestVerdictGap() {
-  return currentVerdictEntry(tutorState.snapshot())?.gap || null;
-}
-
-function solutionTranscriptElement(message = null) {
-  const target = message || latestTutorActionMessage;
-  return transcriptMessageTextNode(target);
-}
-
-function scrollFormulaCardIntoView() {
-  if (!formulaCard || formulaCard.classList.contains("hidden")) return;
-  formulaCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-async function revealWorkedSolution(plan = activePlan()) {
+// ═══════════════════════════════════════════════════════
+// PLAN HANDLING (called by existing planService pipeline)
+// ═══════════════════════════════════════════════════════
+export function setPlan(plan) {
   if (!plan) return;
-  currentSolutionSections = [];
-  tutorState.addLearnerEvent({
-    stage: tutorState.currentStep,
-    event: "view_solution_clicked",
-    hint_count: tutorState.hint_state.current_stage_hints,
-  });
-  await sendTutorMessage({
-    ...buildTutorPayload("show me the solution"),
-    hint_state: { ...(tutorState.hint_state || {}) },
-  }, {
-    showUserMessage: false,
-  });
+  state.plan = plan;
+  state.socraticQuestionCount = 0;
+  state.activeStages = {};
+  state.hasExplored = false;
+  resetContext();
+  resetMomentStrip();
+  _clearQuickActions();
+  _clearAlgebra();
+
+  // Update problem pill
+  const q = plan.problem?.questionText || plan.problem?.raw || '';
+  if (q) {
+    const pillEl = problemPillText();
+    if (pillEl) pillEl.textContent = q.length > 90 ? q.slice(0,87) + '…' : q;
+  }
+
+  // Update breadcrumb
+  const topicMap = {
+    'skew_lines': '3D Geometry · Skew Lines',
+    'line_plane': '3D Geometry · Line & Plane',
+    'derivative': 'Calculus · Derivatives',
+    'integral': 'Calculus · Integration',
+    'calculus': 'Calculus',
+    'vectors': 'Vectors',
+    'electric_field': 'Physics · Electric Fields',
+  };
+  const sceneType = plan.sceneType || plan.planType || '';
+  const bc = breadcrumb();
+  if (bc) bc.textContent = topicMap[sceneType] || '3D Math Tutor';
+
+  // Update floating formula card
+  _updateFloatingFormula(plan);
+
+  // Update toolbar status
+  const ts = toolbarStatus();
+  if (ts) ts.textContent = (sceneType || 'scene') + ' · 3D mode';
+
+  // Hide welcome state
+  const ws = welcomeState();
+  if (ws) ws.style.display = 'none';
+
+  // Append user question to chat
+  if (q) _appendUserMessage(q);
 }
 
-function renderAnalyticPanels(plan = activePlan()) {
-  const analytic = plan?.analyticContext || null;
-  const showFormulaCard = Boolean(
-    isAnalyticPlan(plan)
-    && analytic
-    && !analyticFormulaDismissed
-    && (analyticFormulaVisible || currentSceneMoment(plan)?.revealFormula || analyticFullSolutionVisible)
-  );
-  const showSolutionDrawer = Boolean(isAnalyticPlan(plan) && analytic && !analyticFormulaDismissed && analyticFullSolutionVisible);
+function _updateFloatingFormula(plan) {
+  const el = floatingFormulaContent();
+  if (!el) return;
+  // Try multiple locations for line/formula data
+  const lines = plan.analyticContext?.lines
+    || plan.objectSuggestions?.filter(o => o.type === 'line')
+    || plan.problem?.entities?.lines;
 
-  formulaCard?.classList.toggle("hidden", !showFormulaCard);
-  solutionDrawer?.classList.toggle("hidden", !showSolutionDrawer);
-
-  if (!showFormulaCard || !analytic) return;
-
-  if (formulaCardTitle) formulaCardTitle.textContent = analytic.formulaCard?.title || "Relevant Formula";
-  if (formulaCardEquation) {
-    try {
-      formulaCardEquation.innerHTML = renderMathBlockHtml(analytic.formulaCard?.formula || plan.answerScaffold?.formula || "", {
-        displayMode: true,
-      });
-    } catch {
-      formulaCardEquation.textContent = analytic.formulaCard?.formula || plan.answerScaffold?.formula || "";
-    }
-  }
-  if (formulaCardExplanation) {
-    formulaCardExplanation.innerHTML = renderRichTextHtml(analytic.formulaCard?.explanation || plan.answerScaffold?.explanation || "");
-  }
-  if (formulaCardRevealBtn) {
-    const canRevealSolution = showSolutionDrawer || tutorState.hint_state?.escalate_next === true;
-    formulaCardRevealBtn.classList.toggle("hidden", !canRevealSolution);
-    formulaCardRevealBtn.textContent = showSolutionDrawer ? "Hide Full Solution" : "Show me the solution";
-  }
-
-  if (showSolutionDrawer && solutionDrawerTitle && solutionDrawerSteps) {
-    solutionDrawerTitle.textContent = analytic.formulaCard?.title || "Worked Solution";
-    if (solutionDrawerAnswer && solutionDrawerAnswerValue) {
-      solutionDrawerAnswer.classList.add("hidden");
-      solutionDrawerAnswerValue.innerHTML = "";
-    }
-
-    // Use premium Answer Card for CAS-solved plans, fallback to generic for LLM plans
-    if (plan.casSolved && planHasAnswerCard(plan)) {
-      renderAnswerCard({
-        container: solutionDrawerSteps,
-        answerScaffold: plan.answerScaffold,
-        analyticContext: plan.analyticContext,
-        casSolved: true,
-      });
-    } else {
-      solutionDrawerSteps.innerHTML = renderSolutionSections(currentSolutionSections.length ? currentSolutionSections : solutionSectionsForPlan(plan));
-    }
-  }
-}
-
-function updateStageRail() {
-  const plan = activePlan();
-  if (!stageRail || !stageRailProgress || !stageRailGoal) return;
-  if (!plan) {
-    stageRail.classList.add("hidden");
-    stageRailNext?.classList.add("hidden");
-    if (stageRailNext) stageRailNext.disabled = true;
-    updateComposerState();
-    return;
-  }
-
-  const stage = currentLessonStage(plan);
-  const stageIndex = currentStageIndex(plan);
-  const learningStage = tutorState.learningStage;
-
-  stageRail.classList.remove("hidden");
-
-  if (isLessonComplete()) {
-    stageRailProgress.textContent = "Complete";
-    stageRailGoal.textContent = "Solved. Ask a follow-up or start a similar question.";
-  } else if ((learningStage === "orient" || learningStage === "build") && stage) {
-    stageRailProgress.textContent = `${Math.max(stageIndex + 1, 1)} / ${plan.lessonStages.length}`;
-    stageRailGoal.textContent = stage.goal || plan.sceneFocus?.focusPrompt || "";
-  } else if (learningStage === "predict") {
-    stageRailProgress.textContent = "Predict";
-    stageRailGoal.textContent = tutorState.predictionState.submitted
-      ? "Check your prediction against the scene."
-      : "What's your gut feeling?";
-  } else if (learningStage === "check") {
-    stageRailProgress.textContent = "Check";
-    stageRailGoal.textContent = "Compare your prediction with the scene.";
-  } else if (learningStage === "reflect") {
-    stageRailProgress.textContent = "Reflect";
-    stageRailGoal.textContent = "What's the key idea?";
+  if (lines && lines.length >= 2) {
+    const l1 = lines[0];
+    const l2 = lines[1];
+    const fmt = (l) => {
+      if (l.point && l.direction) {
+        const p = l.point;
+        const d = l.direction;
+        return `r = (${p[0]},${p[1]},${p[2]}) + t(${d[0]},${d[1]},${d[2]})`;
+      }
+      return l.label || l.name || JSON.stringify(l);
+    };
+    el.textContent = `L1: ${fmt(l1)} | L2: ${fmt(l2)}`;
   } else {
-    stageRailProgress.textContent = "Explore";
-    stageRailGoal.textContent = "";
+    const q = plan.problem?.questionText || '';
+    const m = q.match(/f\(x\)\s*=\s*[^.\n]+/i);
+    el.textContent = m ? m[0] : (q.slice(0, 55) || '—');
   }
 
-  const showAnalyticNext = isAnalyticPlan(plan) && !isLessonComplete() && stageIndex < plan.lessonStages.length - 1;
-  if (stageRailNext) {
-    stageRailNext.classList.toggle("hidden", !showAnalyticNext);
-    stageRailNext.disabled = !showAnalyticNext;
-    stageRailNext.textContent = "Next";
-  }
-
-  renderAnalyticPanels(plan);
-  updateComposerState();
+  const ff = document.getElementById('floatingFormula');
+  if (ff) ff.classList.remove('hidden');
 }
 
-function focusStageTargets(targetIds = [], options = {}) {
-  if (!sceneApi?.focusObjects) return;
-  if (!targetIds?.length) {
-    sceneApi.clearFocus?.();
-    return;
-  }
-  sceneApi.focusObjects(targetIds, options);
+// ═══════════════════════════════════════════════════════
+// MESSAGE RENDERING
+// ═══════════════════════════════════════════════════════
+function _appendUserMessage(text) {
+  const c = chat();
+  if (!c) return;
+
+  const el = document.createElement('div');
+  el.className = 'msg msg--user';
+  el.innerHTML = `<div class="bubble bubble--user">${_escHtml(text)}</div>`;
+  c.appendChild(el);
+  _scrollToBottom();
 }
 
-function syncStepFromAssessment(plan, assessment) {
-  if (!plan?.buildSteps?.length || !assessment) return;
-  const stepId = assessment.guidance?.currentStepId || assessment.activeStep?.stepId || null;
-  if (!stepId) return;
-  const stepIndex = plan.buildSteps.findIndex((step) => step.id === stepId);
-  if (stepIndex >= 0) {
-    tutorState.goToStep(stepIndex);
-  }
-}
+export function appendAiMessage(text, variant = '') {
+  const c = chat();
+  if (!c) return null;
 
-function renderSceneInfo() {
-  if (!sceneInfo || !objectCount) return;
-
-  const snapshot = currentSnapshot();
-  const plan = activePlan();
-  const selected = selectedObjectContext(snapshot);
-  const count = snapshot.objects.length;
-
-  objectCount.textContent = String(count);
-
-  if (!plan) {
-    if (!count) {
-      sceneInfo.innerHTML = `<p class="muted-text">No active lesson. Build a scene manually, ask a question, or say "show me something cool."</p>`;
-      return;
-    }
-
-    const freeformSelectionMarkup = selected
-      ? `
-        <p class="muted-text" style="margin:8px 0 0">
-          Selected: <strong>${escapeHtml(selected.label)}</strong>
-          <span class="formula">V = ${formatNumber(selected.metrics.volume)}, SA = ${formatNumber(selected.metrics.surfaceArea)}</span>
-        </p>
-      `
-      : `<p class="muted-text" style="margin:8px 0 0">Select an object, or ask ImmersiveSense to explain or remix the scene.</p>`;
-
-    sceneInfo.innerHTML = `
-      <p style="margin:0 0 6px"><strong>Freeform scene</strong></p>
-      <p class="muted-text">${count} object${count === 1 ? "" : "s"} currently in the world</p>
-      <p class="muted-text">ImmersiveSense can read this scene, talk about it, and edit it if you ask.</p>
-      ${freeformSelectionMarkup}
-    `;
-    return;
-  }
-
-  const selectionMarkup = selected
-    ? `
-      <p class="muted-text" style="margin:8px 0 0">
-        Selected: <strong>${escapeHtml(selected.label)}</strong>
-        <span class="formula">V = ${formatNumber(selected.metrics.volume)}, SA = ${formatNumber(selected.metrics.surfaceArea)}</span>
-      </p>
-    `
-    : `<p class="muted-text" style="margin:8px 0 0">Select an object in the scene to inspect its measurements and role.</p>`;
-
-  if (isAnalyticPlan(plan)) {
-    const analyticSelectionMarkup = selected
-      ? `<p class="muted-text" style="margin:8px 0 0">Selected: <strong>${escapeHtml(selected.label)}</strong> ${escapeHtml(JSON.stringify(selected.params || {}))}</p>`
-      : `<p class="muted-text" style="margin:8px 0 0">Select a line, plane, point, or helper to inspect it.</p>`;
-    const currentMoment = currentSceneMoment(plan);
-    sceneInfo.innerHTML = `
-      <p style="margin:0 0 6px"><strong>${escapeHtml(plan.sourceSummary?.cleanedQuestion || plan.problem?.question || "Current lesson")}</strong></p>
-      <p class="muted-text">${count} object${count === 1 ? "" : "s"} currently visible in the world</p>
-      <p class="muted-text">Current visual step: <span class="formula">${escapeHtml(currentMoment?.title || "Observe")}</span></p>
-      <p class="muted-text">Focus: <span class="formula">${escapeHtml(plan.sceneFocus?.primaryInsight || currentMoment?.goal || "")}</span></p>
-      ${analyticSelectionMarkup}
-    `;
-    return;
-  }
-
-  sceneInfo.innerHTML = `
-    <p style="margin:0 0 6px"><strong>${escapeHtml(plan.sourceSummary?.cleanedQuestion || plan.problem?.question || "Current lesson")}</strong></p>
-    <p class="muted-text">${count} object${count === 1 ? "" : "s"} currently in the world</p>
-    <p class="muted-text">Focus: <span class="formula">${escapeHtml(plan.sceneFocus?.primaryInsight || plan.sceneFocus?.focusPrompt || "Build the scene and inspect the key relationship.")}</span></p>
-    ${selectionMarkup}
+  const el = document.createElement('div');
+  el.className = 'msg';
+  el.innerHTML = `
+    <div class="msg-avatar">✦</div>
+    <div class="bubble ${variant ? 'bubble--' + variant : ''}">${_processText(text)}</div>
   `;
+  c.appendChild(el);
+  _scrollToBottom();
+  return el.querySelector('.bubble');
 }
 
-// ─── Live Student Model UI updater ───────────────────────────────────────────
-let _sessionMessageCount = 0;
+export function appendStreamingMessage() {
+  const c = chat();
+  if (!c) return null;
 
-function updateStudentModelUI(studentModel) {
-  if (!studentModel) return;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg';
 
-  const graph = studentModel.graph || {};
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = '✦';
 
-  // Color thresholds
-  function barColor(p) {
-    if (p >= 0.75) return "#1D9E75"; // green
-    if (p >= 0.50) return "#BA7517"; // amber
-    return "#E24B4A";                // red
-  }
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = '';
 
-  // Update each bar
-  for (const [topic, node] of Object.entries(graph)) {
-    const pct = Math.round((node.probability || 0.5) * 100);
-    const fillEl = document.getElementById(`mastery-${topic}`);
-    const pctEl  = document.getElementById(`pct-${topic}`);
-    if (fillEl) {
-      fillEl.style.width = `${pct}%`;
-      fillEl.style.background = barColor(node.probability || 0.5);
-      // Smooth animated transition
-      fillEl.style.transition = "width 0.7s ease, background 0.5s ease";
-    }
-    if (pctEl) pctEl.textContent = `${pct}%`;
-  }
-
-  // Learner level
-  const levelEl = document.getElementById("session-learner-level");
-  if (levelEl && studentModel.learnerLevel) {
-    levelEl.textContent = studentModel.learnerLevel;
-    levelEl.className = "stat-row__value";
-    if (studentModel.learnerLevel === "advanced") levelEl.classList.add("stat-row__value--good");
-    else if (studentModel.learnerLevel === "beginner") levelEl.classList.add("stat-row__value--warn");
-  }
-
-  // Strongest / weakest topics
-  const entries = Object.entries(graph).filter(([, n]) => n.attempts > 0);
-  if (entries.length) {
-    const sorted = entries.sort(([, a], [, b]) => b.probability - a.probability);
-    const topicLabel = (key) => key.replace(/_/g, " ");
-    const strongestEl = document.getElementById("session-strongest-topic");
-    const weakestEl   = document.getElementById("session-weakest-topic");
-    if (strongestEl) strongestEl.textContent = topicLabel(sorted[0][0]);
-    if (weakestEl)   weakestEl.textContent   = topicLabel(sorted[sorted.length - 1][0]);
-  }
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(bubble);
+  c.appendChild(wrapper);
+  _scrollToBottom();
+  return bubble;
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
-function renderAssessment(assessment) {
-  if (!sceneValidation) return;
+// ═══════════════════════════════════════════════════════
+// 6-STAGE PROGRESSIVE ACCORDION
+// ═══════════════════════════════════════════════════════
+export function handleProgressiveStageChunk(payload) {
+  const { type, stage, content, sceneActions, isComplete } = payload;
 
-  if (isLessonComplete()) {
-    sceneValidation.innerHTML = `
-      <div class="validation-stat"><strong>Solved</strong></div>
-      <div class="validation-stat"><strong>Next move</strong><br />Ask a follow-up or try a similar question.</div>
-      <div class="validation-stat"><strong>Answer</strong><br />${escapeHtml(activePlan()?.answerScaffold?.finalAnswer || "Shown in the lesson")}</div>
-    `;
+  if (type === 'stage_error') {
+    _renderStageError(stage, content);
     return;
   }
 
-  if (!assessment) {
-    if (!activePlan()) {
-      sceneValidation.innerHTML = `<p class="muted-text">ImmersiveSense can chat about anything, inspect the current scene, and build a fresh math visual when you ask.</p>`;
-      return;
-    }
-    sceneValidation.innerHTML = `<p class="muted-text">The tutor will inspect the scene and highlight the next useful idea.</p>`;
-    return;
+  // Get or create the accordion container
+  let accordion = document.getElementById('progressive-accordion');
+  if (!accordion) {
+    const c = chat();
+    if (!c) return;
+
+    // Add avatar + accordion wrapper
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg';
+    wrapper.innerHTML = `<div class="msg-avatar">✦</div><div style="flex:1;min-width:0"></div>`;
+
+    accordion = document.createElement('div');
+    accordion.id = 'progressive-accordion';
+    accordion.className = 'progressive-accordion';
+
+    wrapper.querySelector('div:last-child').appendChild(accordion);
+    c.appendChild(wrapper);
   }
 
-  if (isAnalyticPlan()) {
-    const currentMoment = currentSceneMoment();
-    const formulaText = activePlan()?.analyticContext?.formulaCard?.formula || activePlan()?.answerScaffold?.formula || "";
-    sceneValidation.innerHTML = `
-      <div class="validation-stat"><strong>Auto scene ready</strong></div>
-      <div class="validation-stat"><strong>${escapeHtml(currentMoment?.title || "Observe")}</strong><br />${escapeHtml(currentMoment?.goal || assessment.guidance?.coachFeedback || "Use the visible scene to reason.")}</div>
-      <div class="validation-stat"><strong>Formula</strong><br />${formulaText ? renderMathBlockHtml(formulaText, { displayMode: true }) : "Reveal when ready"}</div>
-    `;
-    return;
-  }
+  // Render the specific stage card
+  const stageLabels = {
+    1: 'Problem deconstruction',
+    2: 'Geometric intuition',
+    3: 'Formula selection',
+    4: 'Step-by-step calculation',
+    5: 'Common pitfalls',
+    6: 'Verified answer',
+  };
 
-  const guidance = assessment.guidance || {};
-  const readyLabel = guidance.readyForPrediction ? "Scene ready" : "Scene preview";
-  sceneValidation.innerHTML = `
-    <div class="validation-stat"><strong>${readyLabel}</strong></div>
-    <div class="validation-stat"><strong>${assessment.summary.objectCount}</strong> object${assessment.summary.objectCount === 1 ? "" : "s"} visible</div>
-    <div class="validation-stat"><strong>Next focus</strong><br />${escapeHtml(guidance.coachFeedback || "The tutor is highlighting the next relationship.")}</div>
-  `;
-}
+  const label = stageLabels[stage] || type;
 
-function renderCameraBookmarks(plan = activePlan()) {
-  if (!cameraBookmarkList) return;
-  cameraBookmarkList.innerHTML = "";
-  const bookmarks = plan?.cameraBookmarks || [];
-  cameraBookmarkPanel?.classList.toggle("hidden", !bookmarks.length);
-  bookmarks.forEach((bookmark) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "camera-bookmark-btn";
-    button.textContent = bookmark.label;
-    button.addEventListener("click", () => {
-      lastAppliedAnalyticCameraBookmarkId = bookmark.id || null;
-      cameraDirector.animateTo(bookmark.position, bookmark.target, 900);
-    });
-    cameraBookmarkList.appendChild(button);
-  });
-}
-
-function initCameraBookmarkPanel() {
-  if (!stageWrapEl || !cameraBookmarkList || cameraBookmarkPanel) return;
-
-  const panel = document.createElement("section");
-  panel.className = "camera-bookmark-panel hidden";
-  panel.innerHTML = `
-    <div class="camera-bookmark-panel-header">
-      <div>
-        <p class="camera-bookmark-panel-eyebrow">Scene Camera</p>
-        <h3 class="camera-bookmark-panel-title">Views</h3>
+  let card = state.activeStages[stage];
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'stage-card';
+    card.dataset.stage = stage;
+    card.innerHTML = `
+      <div class="stage-card-header">
+        <span class="stage-num">${stage}</span>
+        <span class="stage-title">${label}</span>
+        <span class="stage-chevron">›</span>
       </div>
-      <span class="camera-bookmark-panel-hint">Drag</span>
+      <div class="stage-card-body"></div>
+    `;
+    card.querySelector('.stage-card-header').addEventListener('click', () => {
+      card.classList.toggle('open');
+    });
+    // Auto-open this card
+    card.classList.add('open');
+    // Close previous card
+    if (state.activeStages[stage - 1]) {
+      state.activeStages[stage - 1].classList.remove('open');
+    }
+
+    // Insert in correct numeric order
+    const existing = [...accordion.querySelectorAll('.stage-card')];
+    const insertBefore = existing.find(c => parseInt(c.dataset.stage) > stage);
+    if (insertBefore) accordion.insertBefore(card, insertBefore);
+    else accordion.appendChild(card);
+
+    state.activeStages[stage] = card;
+  }
+
+  const body = card.querySelector('.stage-card-body');
+  _renderStageContent(body, type, stage, content, sceneActions);
+
+  if (isComplete && stage === 6) {
+    window.dispatchEvent(new CustomEvent('answerRevealed'));
+    _updateAlgebraTab(content);
+  }
+
+  // Wire scene actions
+  if (sceneActions?.length) {
+    _wireSceneActions(body, sceneActions);
+  }
+
+  _scrollToBottom();
+}
+
+function _renderStageContent(body, type, stage, content, sceneActions) {
+  switch (type) {
+    case 'deconstruct':
+      body.innerHTML = _renderDeconstruct(content);
+      break;
+    case 'intuition':
+      body.innerHTML = `<div style="color:var(--text-secondary);font-size:11.5px;line-height:1.65">${_processText(typeof content === 'string' ? content : content?.insight || '')}</div>`;
+      break;
+    case 'formula':
+      body.innerHTML = _renderFormula(content);
+      break;
+    case 'steps':
+      body.innerHTML = _renderSteps(content, sceneActions);
+      break;
+    case 'manipulation':
+      body.innerHTML = _renderManipulation(content);
+      break;
+    case 'answer':
+      body.innerHTML = _renderAnswer(content);
+      card = body.closest('.stage-card');
+      if (card) {
+        card.style.borderColor = 'rgba(20,184,166,0.4)';
+        card.querySelector('.stage-num').style.background = 'rgba(20,184,166,0.2)';
+        card.querySelector('.stage-num').style.color = 'var(--accent-teal)';
+      }
+      // Increment question count tracking (answer revealed = max reached)
+      state.socraticQuestionCount = 0;
+      break;
+    default:
+      body.innerHTML = `<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.65">${_processText(typeof content === 'string' ? content : JSON.stringify(content))}</div>`;
+  }
+}
+
+function _renderDeconstruct(content) {
+  if (!content || typeof content === 'string') {
+    return `<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.65">${_processText(content || '')}</div>`;
+  }
+  const { problemType, knowns, unknown, domain, commonMistake } = content;
+  let rows = '';
+  if (Array.isArray(knowns)) {
+    knowns.forEach(k => {
+      rows += `<tr><td>${_escHtml(k.name || '')}</td><td>${_escHtml(k.value || '')}</td></tr>`;
+    });
+  }
+  return `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">
+      <span style="color:var(--accent-indigo);font-weight:500">${_escHtml(problemType || '')}</span>
+      ${domain ? `· ${_escHtml(domain)}` : ''}
     </div>
+    ${rows ? `
+    <table class="deconstruct-table">
+      <thead><tr><th>Given</th><th>Value</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : ''}
+    ${unknown ? `<div style="margin-top:6px;font-size:11px;color:var(--text-secondary)">
+      <span style="color:var(--text-muted)">Find:</span> <span style="font-family:var(--font-mono);color:var(--text-mono)">${_escHtml(unknown)}</span>
+    </div>` : ''}
+    ${commonMistake ? `<div style="margin-top:8px;background:rgba(245,158,11,0.08);border:0.5px solid rgba(245,158,11,0.2);border-radius:6px;padding:6px 8px;font-size:11px;color:#fde68a">
+      ⚠ Common mistake: ${_escHtml(commonMistake)}
+    </div>` : ''}
   `;
-  panel.appendChild(cameraBookmarkList);
-  stageWrapEl.appendChild(panel);
-  cameraBookmarkPanel = panel;
-
-  const header = panel.querySelector(".camera-bookmark-panel-header");
-  if (!header) return;
-
-  let dragState = null;
-
-  const stopDrag = () => {
-    if (!dragState) return;
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", stopDrag);
-    window.removeEventListener("pointercancel", stopDrag);
-    panel.classList.remove("is-dragging");
-    dragState = null;
-  };
-
-  const onPointerMove = (event) => {
-    if (!dragState || !stageWrapEl) return;
-    const bounds = stageWrapEl.getBoundingClientRect();
-    const panelWidth = panel.offsetWidth;
-    const panelHeight = panel.offsetHeight;
-    const nextLeft = Math.min(
-      Math.max(12, event.clientX - bounds.left - dragState.offsetX),
-      Math.max(12, bounds.width - panelWidth - 12),
-    );
-    const nextTop = Math.min(
-      Math.max(12, event.clientY - bounds.top - dragState.offsetY),
-      Math.max(12, bounds.height - panelHeight - 12),
-    );
-    panel.style.left = `${nextLeft}px`;
-    panel.style.top = `${nextTop}px`;
-    panel.style.right = "auto";
-  };
-
-  header.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    const panelRect = panel.getBoundingClientRect();
-    dragState = {
-      offsetX: event.clientX - panelRect.left,
-      offsetY: event.clientY - panelRect.top,
-    };
-    panel.classList.add("is-dragging");
-    header.setPointerCapture?.(event.pointerId);
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", stopDrag);
-    window.addEventListener("pointercancel", stopDrag);
-  });
 }
 
-function sceneDirectiveForCurrentMoment(plan = activePlan()) {
-  const representation = defaultRepresentationDirective(plan);
-  if (!isAnalyticPlan(plan)) {
-    return representation;
+function _renderFormula(content) {
+  if (!content) return '';
+  const formula = typeof content === 'string' ? content : content.formula || '';
+  const why = typeof content === 'object' ? (content.why || '') : '';
+  let html = '';
+  if (formula) {
+    html += `<div style="margin:6px 0;padding:8px;background:rgba(20,184,166,0.06);border-radius:6px;text-align:center;font-family:var(--font-mono);font-size:12px;color:var(--text-mono)">${_processText(formula)}</div>`;
   }
-  const moment = currentSceneMoment(plan);
-  if (!moment) return representation;
-  return {
-    ...representation,
-    stageId: moment.id,
-    cameraBookmarkId: moment.cameraBookmarkId || null,
-    focusTargets: moment.focusTargets || [],
-    visibleObjectIds: moment.visibleObjectIds || [],
-    visibleOverlayIds: moment.visibleOverlayIds || [],
-    revealFormula: Boolean(moment.revealFormula),
-    revealFullSolution: Boolean(moment.revealFullSolution),
-    representationMode: moment.representationMode || representation.representationMode,
-  };
-}
-
-function applyRepresentationDirective(sceneDirective = null) {
-  const directive = sceneDirective || defaultRepresentationDirective();
-  currentRepresentationMode = directive.representationMode || "3d";
-  stageWrapEl?.setAttribute("data-representation-mode", currentRepresentationMode);
-  setUnfoldRepresentationMode({
-    representationMode: currentRepresentationMode,
-    companionObjectId: directive.companionObjectId || null,
-    companionTitle: directive.companionTitle || "",
-    companionReason: directive.companionReason || "",
-  });
-}
-
-function applySceneDirective(sceneDirective = null, { forceCamera = false } = {}) {
-  const plan = activePlan();
-  if (!sceneDirective) {
-    applyRepresentationDirective(defaultRepresentationDirective(plan));
-    return;
+  if (why) {
+    html += `<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.65;margin-top:6px">${_processText(why)}</div>`;
   }
-  applyRepresentationDirective(sceneDirective);
-  if (!isAnalyticPlan(plan)) return;
-
-  const stageId = sceneDirective.stageId || currentSceneMoment(plan)?.id || null;
-  const visibleIds = sceneDirective.visibleObjectIds?.length
-    ? sceneDirective.visibleObjectIds
-    : currentSceneMoment(plan)?.visibleObjectIds || [];
-  const requiredSnapshot = buildSceneSnapshotFromSuggestions(plan, visibleIds);
-  const snapshot = currentSnapshot();
-  const shouldSyncScene = shouldSyncAnalyticScene({
-    stageId,
-    lastAppliedStageId: lastAppliedAnalyticStageId,
-    snapshotObjects: snapshot.objects || [],
-    requiredObjects: requiredSnapshot.objects || [],
-  });
-
-  if (shouldSyncScene) {
-    const mergedObjects = mergeRequiredSceneObjects(snapshot.objects || [], requiredSnapshot.objects || []);
-    const selectedObjectId = (snapshot.selectedObjectId && mergedObjects.some((objectSpec) => objectSpec.id === snapshot.selectedObjectId))
-      ? snapshot.selectedObjectId
-      : (requiredSnapshot.selectedObjectId && mergedObjects.some((objectSpec) => objectSpec.id === requiredSnapshot.selectedObjectId))
-        ? requiredSnapshot.selectedObjectId
-        : null;
-    sceneApi?.loadSnapshot?.({
-      objects: mergedObjects,
-      selectedObjectId,
-    }, "analytic-auto");
-  }
-  lastAppliedAnalyticStageId = stageId;
-  analyticOverlayManager?.render(plan, sceneDirective.visibleOverlayIds || []);
-
-  const bookmark = (plan.cameraBookmarks || []).find((item) => item.id === sceneDirective.cameraBookmarkId);
-  const bookmarkId = bookmark?.id || null;
-  const shouldAnimateCamera = Boolean(
-    bookmark
-    && forceCamera
-    && (!bookmarkId || bookmarkId !== lastAppliedAnalyticCameraBookmarkId)
-  );
-  if (shouldAnimateCamera) {
-    cameraDirector.animateTo(bookmark.position, bookmark.target, 900);
-  }
-  lastAppliedAnalyticCameraBookmarkId = bookmarkId;
-
-  if (sceneDirective.focusTargets?.length) {
-    focusStageTargets(sceneDirective.focusTargets, { selectFirst: true });
-  }
-
-  if (sceneDirective.revealFormula) {
-    analyticFormulaVisible = true;
-    analyticFormulaDismissed = false;
-  }
-  if (sceneDirective.revealFullSolution) {
-    analyticFormulaVisible = true;
-    analyticFullSolutionVisible = true;
-    analyticFormulaDismissed = false;
-  }
-  renderAnalyticPanels(plan);
-  renderAnnotations();
-}
-
-function applyAnalyticSceneState({ forceCamera = false } = {}) {
-  if (!isAnalyticPlan()) return;
-  applySceneDirective(sceneDirectiveForCurrentMoment(), { forceCamera });
-}
-
-function mergeSceneObjects(baseObjects = [], nextObjects = []) {
-  const byId = new Map((baseObjects || []).map((objectSpec) => [objectSpec.id, objectSpec]));
-  (nextObjects || []).forEach((objectSpec) => {
-    if (!objectSpec?.id) return;
-    byId.set(objectSpec.id, objectSpec);
-  });
-  return [...byId.values()];
-}
-
-function applyAssistantSceneCommand(sceneCommand = null) {
-  if (!sceneCommand?.operations?.length || !sceneApi) return false;
-
-  sceneApi.cancelPreviewAction?.();
-  let snapshot = currentSnapshot();
-  let changedScene = false;
-
-  sceneCommand.operations.forEach((operation) => {
-    switch (operation.kind) {
-      case "replace_scene":
-        snapshot = sceneApi.loadSnapshot?.({
-          objects: operation.objects || [],
-          selectedObjectId: operation.selectedObjectId || null,
-        }, "assistant-replace") || currentSnapshot();
-        changedScene = true;
-        break;
-      case "merge_objects":
-        snapshot = sceneApi.loadSnapshot?.({
-          objects: mergeSceneObjects(snapshot.objects || [], operation.objects || []),
-          selectedObjectId: snapshot.selectedObjectId || null,
-        }, "assistant-merge") || currentSnapshot();
-        changedScene = true;
-        break;
-      case "remove_objects":
-        snapshot = sceneApi.loadSnapshot?.({
-          objects: (snapshot.objects || []).filter((objectSpec) => !(operation.objectIds || []).includes(objectSpec.id)),
-          selectedObjectId: (operation.objectIds || []).includes(snapshot.selectedObjectId) ? null : snapshot.selectedObjectId,
-        }, "assistant-remove") || currentSnapshot();
-        changedScene = true;
-        break;
-      case "select_object":
-        sceneApi.selectObject?.(operation.objectId || null);
-        snapshot = currentSnapshot();
-        break;
-      case "focus_objects":
-        sceneApi.focusObjects?.(operation.targetIds || [], { selectFirst: true });
-        break;
-      case "clear_scene":
-        sceneApi.clearScene?.();
-        snapshot = currentSnapshot();
-        changedScene = true;
-        break;
-      case "clear_focus":
-        sceneApi.clearFocus?.();
-        break;
-      case "reset_view":
-        sceneApi.resetView?.();
-        break;
-      default:
-        break;
-    }
-  });
-
-  renderAnnotations();
-  renderSceneInfo();
-  renderAssessment(activePlan() ? tutorState.latestAssessment : null);
-  updateStageRail();
-  return changedScene;
-}
-
-function renderAnnotations() {
-  if (!world?.scene) return;
-  if (isAnalyticPlan()) {
-    return;
-  }
-  clearLabels(world.scene);
-  currentSnapshot().objects.forEach((objectSpec) => {
-    const [x, y, z] = objectSpec.position;
-    addLabel(world.scene, objectSpec.label || objectSpec.shape, [x, y + 0.9, z], "name");
-  });
-}
-
-function announceCurrentStage(force = false) {
-  if (tutorState.phase === "parsing") return;
-  const plan = activePlan();
-  if (!plan) return;
-  if (isLessonComplete() && !force) return;
-
-  const stageKey = currentStageKey(plan);
-  if (!force && lastAnnouncedStageKey === stageKey) return;
-
-  lastAnnouncedStageKey = stageKey;
-  if (isAnalyticPlan(plan)) {
-    applyAnalyticSceneState({ forceCamera: force });
-  } else {
-    applyRepresentationDirective(sceneDirectiveForCurrentMoment(plan));
-    focusStageTargets(stageFocusTargets(plan), { selectFirst: tutorState.learningStage === "build" });
-  }
-  const actionState = resolveTutorActionState({
-    plan,
-    stage: getCurrentStage(plan),
-    learningState: tutorState.snapshot(),
-    completionState: tutorState.completionState,
-    responseKind: "stage_opening",
-  });
-  addTranscriptMessage("tutor", buildStageIntroMessage(plan), {
-    actions: actionState,
-  });
-}
-
-async function syncAssessment() {
-  const plan = activePlan();
-  if (!plan) {
-    renderAssessment(null);
-    renderSceneInfo();
-    setCheckpointState(null);
-    updateStageRail();
-    return;
-  }
-
+  // Try KaTeX render
   try {
-    const { assessment } = await evaluateBuild({
-      plan,
-      sceneSnapshot: currentSnapshot(),
-      currentStepId: tutorState.getCurrentStep()?.id || null,
-    });
-    tutorState.setAssessment(assessment);
-    syncStepFromAssessment(plan, assessment);
-
-    if (isAnalyticPlan(plan)) {
-      renderAssessment(assessment);
-      renderSceneInfo();
-      setCheckpointState(null);
-      updateStageRail();
-      announceCurrentStage();
-      return;
+    if (formula && window.renderMathInElement) {
+      setTimeout(() => {
+        const container = document.querySelector(`[data-stage="3"] .stage-card-body`);
+        if (container) window.renderMathInElement(container, { throwOnError: false });
+      }, 100);
     }
-
-    if (
-      tutorState.learningStage === "build"
-      && assessment.guidance?.readyForPrediction
-      && tutorState.currentStep >= Math.max(plan.lessonStages.length - 1, 0)
-    ) {
-      tutorState.setLearningStage("predict");
-      tutorState.resetPrediction(plan.learningMoments?.predict?.prompt || "");
-      lastSceneFeedback = "The scene is ready. Make one short prediction before the tutor explains it.";
-    }
-
-    renderAssessment(assessment);
-    renderSceneInfo();
-    updateStageRail();
-
-    const checkpointKey = tutorState.learningStage === "build" && assessment?.activeStep?.complete
-      ? `${assessment.activeStep.stepId}:complete`
-      : null;
-
-    if (checkpointKey && checkpointKey !== lastCheckpointKey) {
-      lastCheckpointKey = checkpointKey;
-      setCheckpointState({ prompt: currentLessonStage(plan)?.checkpointPrompt || "Does this match what you expected?" });
-    } else if (!checkpointKey) {
-      setCheckpointState(null);
-    }
-
-    announceCurrentStage();
-  } catch (error) {
-    console.error("Assessment sync failed:", error);
-  }
+  } catch {}
+  return html;
 }
 
-function scheduleAssessment() {
-  window.clearTimeout(assessmentTimer);
-  assessmentTimer = window.setTimeout(() => {
-    syncAssessment();
-    renderAnnotations();
-  }, 160);
+function _renderSteps(content, sceneActions) {
+  if (!Array.isArray(content)) {
+    return `<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.65">${_processText(typeof content === 'string' ? content : '')}</div>`;
+  }
+
+  const items = content.map((step, i) => {
+    const hasScene = step.sceneAction && step.sceneTarget;
+    return `
+      <div class="step-item" data-target="${_escHtml(step.sceneTarget || '')}" data-action="${_escHtml(step.sceneAction || '')}">
+        <div class="step-num">${step.stepNumber || i + 1}</div>
+        <div class="step-content">
+          <div class="step-action">${_escHtml(step.action || '')}</div>
+          ${step.expression ? `<div class="step-expr">${_processText(step.expression)}</div>` : ''}
+          ${step.result ? `<div class="step-result">= ${_processText(step.result)}</div>` : ''}
+          ${step.explanation ? `<div class="step-explain">${_escHtml(step.explanation)}</div>` : ''}
+          ${hasScene ? `<button class="show-in-3d-btn" data-target="${_escHtml(step.sceneTarget)}" data-action="${_escHtml(step.sceneAction)}">
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M6 1L1 4v4l5 3 5-3V4z"/></svg>
+            Show in 3D
+          </button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `<div class="step-list">${items}</div>`;
 }
 
-function setPlan(plan, options = {}) {
-  const normalizedPlan = normalizeScenePlan(plan);
-  const simObject = normalizedPlan.objectSuggestions?.find(
-    (obj) => obj.object?.metadata?.isCalculusSimulation
-  );
-  if (simObject) {
-    calculusHud?.show(simObject.object.metadata);
-  } else {
-    calculusHud?.hide();
-  }
-
-  void resetVoiceSessionState();
-  clearLessonAutoAdvanceTimer();
-  lastAnnouncedStageKey = null;
-  lastCheckpointKey = null;
-  analyticFormulaVisible = false;
-  analyticFullSolutionVisible = false;
-  analyticFormulaDismissed = false;
-  lastAppliedAnalyticStageId = null;
-  lastAppliedAnalyticCameraBookmarkId = null;
-  deferredStageAdvance = null;
-  similarQuestionRequest = null;
-  currentSolutionSections = [];
-  latestTutorActionMessage = null;
-  latestTutorActionState = { actions: [], stageType: "orient", lastVerdict: null };
-  tutorState.setPlan(normalizedPlan, { mode: options.mode || normalizedPlan.problem?.mode || "guided" });
-  tutorState.setPhase(isAnalyticPlan(normalizedPlan) ? "guided_build" : "plan_ready");
-  tutorState.setLearningStage(isAnalyticPlan(normalizedPlan) ? "build" : "orient");
-  lastSceneFeedback = normalizedPlan.sceneFocus?.primaryInsight || "ImmersiveSense will react to what you do in the scene.";
-
-  clearTranscript();
-  if (normalizedPlan.problem?.questionText) {
-    addTranscriptMessage("user", normalizedPlan.problem.questionText);
-  }
-  setCheckpointState(null);
-  renderCameraBookmarks(normalizedPlan);
-  renderSceneInfo();
-  renderAssessment(null);
-  updateStageRail();
-
-  if (options.clearScene !== false) {
-    sceneApi?.clearScene?.();
-  }
-  sceneApi?.clearFocus?.();
-  analyticOverlayManager?.clear();
-  if (!isAnalyticPlan(normalizedPlan)) {
-    const autoSnapshot = buildSceneSnapshotFromSuggestions(normalizedPlan);
-    if (autoSnapshot.objects.length) {
-      sceneApi?.loadSnapshot?.(autoSnapshot, "lesson-auto");
-    }
-  }
-  applyRepresentationDirective(defaultRepresentationDirective(normalizedPlan));
-  questionSection?.classList.add("is-compact");
-  setQuestionPanelCollapsed(true, { force: true });
-  switchToTab("tutor");
-  const systemContext = isAnalyticPlan(normalizedPlan) ? "" : buildSystemContextMessage(normalizedPlan);
-  if (systemContext) {
-    addTranscriptMessage("system", systemContext);
-  }
-  announceCurrentStage(true);
+function _renderManipulation(content) {
+  if (!content) return '';
+  const text = typeof content === 'string' ? content : (content.guide || JSON.stringify(content));
+  return `<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.7">${_processText(text)}</div>`;
 }
 
-async function handleQuestionSubmit(overrides = {}) {
-  const questionText = (overrides.questionText ?? questionInput?.value?.trim()) || "";
-  const imageFile = overrides.imageFile ?? questionImageFile;
-  if (!questionText && !imageFile) return;
-  if (questionText && questionInput) {
-    questionInput.value = questionText;
-    updateMathPreview(questionMathPreview, questionText);
-  }
+function _renderAnswer(content) {
+  if (!content) return '';
+  const answer  = typeof content === 'string' ? content : (content.answer || '');
+  const verify  = typeof content === 'object' ? (content.verification || '') : '';
+  const remember = typeof content === 'object' ? (content.remember || '') : '';
 
-  tutorState.reset();
-  tutorState.setPhase("parsing");
-  analyticFormulaVisible = false;
-  analyticFullSolutionVisible = false;
-  analyticFormulaDismissed = false;
-  similarQuestionRequest = null;
-
-  // Hide post-lesson stats: reset panel to in-lesson state for new question
-  const rightPanel = document.getElementById("rightPanel");
-  if (rightPanel) {
-    rightPanel.classList.remove("panel-post-lesson");
-    rightPanel.classList.add("panel-in-lesson");
-  }
-  // Reset session counter
-  _sessionMessageCount = 0;
-  const msgCountEl = document.getElementById("session-concepts-explored");
-  if (msgCountEl) msgCountEl.textContent = "0";
-
-  analyticOverlayManager?.clear();
-  hideEvidence();
-  renderAnalyticPanels(null);
-  if (questionSubmit) questionSubmit.disabled = true;
-  setQuestionStatus("Building a staged lesson from your prompt and scene...", "loading");
-
-  // Immediately clear the transcript and add the user's question,
-  // showing a premium loading indicator in the visible chat log.
-  clearTranscript();
-  if (questionText) {
-    addTranscriptMessage("user", questionText);
-  }
-  const loadingMsg = addTranscriptMessage("tutor", "...");
-  loadingMsg?.classList.add("loading-dots");
-
-  try {
-    const uploadImageFile = imageFile
-      ? await prepareQuestionImageForUpload(imageFile)
-      : null;
-    const { scenePlan } = await requestScenePlan({
-      questionText,
-      imageFile: uploadImageFile,
-      mode: "guided",
-      sceneSnapshot: currentSnapshot(),
-      callbacks: {
-        onMultimodalEvidence: async (data) => {
-          showEvidence({
-            ...data,
-            _imageUrl: imageFile ? questionImagePreviewUrl : null,
-          });
-          registerEvidenceAutoClose();
-        },
-      },
-    });
-    setPlan(scenePlan);
-    closeEvidence(700);
-    setQuestionStatus("", "hidden");
-  } catch (error) {
-    console.error("Plan request failed:", error);
-    tutorState.setError(error.message);
-    setQuestionStatus(`Error: ${error.message}`, "error");
-    if (loadingMsg) {
-      loadingMsg.classList.remove("loading-dots");
-      setTranscriptMessageText(loadingMsg, `Sorry, I encountered an error while building the 3D scene: ${error.message}`, { role: "tutor" });
-    }
-  } finally {
-    if (questionSubmit) questionSubmit.disabled = false;
-  }
+  return `
+    <div style="font-size:13px;font-weight:500;color:var(--accent-teal);font-family:var(--font-mono);margin-bottom:6px">${_processText(answer)}</div>
+    ${verify ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${_processText(verify)}</div>` : ''}
+    ${remember ? `<div style="font-size:11px;background:rgba(99,102,241,0.08);border:0.5px solid rgba(99,102,241,0.2);border-radius:6px;padding:6px 8px;color:#a5b4fc">
+      💡 ${_escHtml(remember)}
+    </div>` : ''}
+  `;
 }
 
-function sceneContextPayload(plan, assessment) {
-  const storeContext = getSceneContext() || {};
-  const selected = storeContext.selection || selectedObjectContext();
+function _renderStageError(stage, message) {
+  const label = `Stage ${stage}`;
+  appendAiMessage(`${label} encountered an issue and was skipped.`, 'error');
+}
 
-  return {
-    objectCount: storeContext.visibleObjects ? storeContext.visibleObjects.length : currentSnapshot().objects.length,
-    selection: selected
-      ? {
-        id: selected.id,
-        label: selected.label,
-        shape: selected.shape,
-        params: selected.params,
-        metrics: selected.metrics ? {
-          volume: Number((selected.metrics.volume || 0).toFixed(3)),
-          surfaceArea: Number((selected.metrics.surfaceArea || 0).toFixed(3)),
-        } : null,
+// ═══════════════════════════════════════════════════════
+// SCENE ACTION WIRING
+// ═══════════════════════════════════════════════════════
+function _wireSceneActions(container, sceneActions) {
+  container.querySelectorAll('.show-in-3d-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const target = btn.dataset.target || (sceneActions[0]?.target);
+      const action = btn.dataset.action || (sceneActions[0]?.action) || 'highlight';
+      if (target && window.world?.highlightObject) {
+        window.world.highlightObject(target, action);
+        btn.classList.add('highlight-pulse');
+        setTimeout(() => btn.classList.remove('highlight-pulse'), 1200);
       }
-      : null,
-    sceneFocus: plan?.sceneFocus || null,
-    sourceSummary: plan?.sourceSummary || null,
-    guidance: assessment?.guidance || null,
-    analyticContext: plan?.analyticContext || null,
-    sceneMoment: currentSceneMoment(plan) || null,
-    completionState: tutorState.completionState || { complete: false, reason: null },
-    representationMode: currentRepresentationMode,
-    formulaVisible: analyticFormulaVisible,
-    fullSolutionVisible: analyticFullSolutionVisible,
-    lastSceneFeedback,
-    studentAction: storeContext.studentAction || "click"
-  };
-}
-
-function buildTutorPayload(messageText = "") {
-  const plan = activePlan();
-  const metrics = confusionTracker.getMetrics();
-  confusionTracker.reset();
-  return {
-    plan,
-    sceneSnapshot: currentSnapshot(),
-    sceneContext: sceneContextPayload(plan, tutorState.latestAssessment),
-    learningState: tutorState.snapshot(),
-    userMessage: String(messageText || "").trim(),
-    contextStepId: tutorState.getCurrentStep()?.id || null,
-    sessionId: voiceConversationId || "default-session",
-    confusionMetrics: metrics,
-    activeModality: calculusHud?.activeModality || "geometric",
-  };
-}
-
-async function handleLearnerInput(text, options = {}) {
-  const {
-    input_source = "text",
-    skip_server_call = false,
-    user_label = null,
-    show_user_message = true,
-  } = options;
-  const normalizedText = String(text || "").trim();
-
-  if (!normalizedText || !awaitingLearnerResponse) return;
-
-  awaitingLearnerResponse = false;
-  lastInputSource = input_source;
-  accumulatedTutorText = "";
-  chatInput?.classList.remove("input--awaiting");
-
-  if (chatInput) chatInput.disabled = true;
-  if (chatSend) chatSend.disabled = true;
-  setVoiceButtonState({ active: voiceModeEnabled, disabled: true });
-
-  if (skip_server_call) return;
-
-  if (tutorState.learningStage === "predict") {
-    tutorState.submitPrediction(normalizedText);
-  }
-
-  const payload = buildTutorPayload(normalizedText);
-  const currentStage = getCurrentStage();
-  const requiresEval = currentStage?.requires_evaluation ?? true;
-  payload.requires_evaluation = requiresEval;
-  payload.input_source = input_source;
-  payload.hint_state = { ...(tutorState.hint_state || {}) };
-
-  await sendTutorMessage(payload, {
-    userLabel: user_label,
-    showUserMessage: show_user_message,
+    });
   });
 }
 
-function returnControlToLearner(context = {}) {
-  if (awaitingLearnerResponse) return;
-  awaitingLearnerResponse = true;
+// ═══════════════════════════════════════════════════════
+// QUICK ACTION BUTTONS
+// ═══════════════════════════════════════════════════════
+export function renderQuickActions(actions) {
+  const wrap = qaWrap();
+  if (!wrap) return;
+  _clearQuickActions();
 
-  if (chatInput) {
-    chatInput.disabled = false;
-    chatInput.focus();
-  }
-  if (chatSend) chatSend.disabled = false;
-  setVoiceButtonState({ active: voiceModeEnabled, disabled: false });
-
-  const placeholders = {
-    CORRECT: "What do you think about the next step?",
-    PARTIAL: "Have another go \u2014 what do you think now?",
-    STUCK: "Take your time \u2014 what are you seeing?",
-  };
-  const defaultPlaceholder = chatInput?.getAttribute("data-default-placeholder")
-    ?? "Ask anything about the scene...";
-
-  let placeholder = defaultPlaceholder;
-  if (context.verdict && placeholders[context.verdict]) {
-    placeholder = placeholders[context.verdict];
-  }
-  if (
-    context.verdict === "STUCK"
-    && tutorState?.hint_state?.escalate_next === true
-  ) {
-    placeholder = "Walk me through it in your own words.";
-  }
-  if (isLessonComplete()) {
-    placeholder = "What would you like to explore?";
-  }
-  if (context.verdict === "CORRECT" && context.stage) {
-    const checkpointPrompt = context.stage.checkpoint?.prompt || context.stage.checkpointPrompt || "";
-    if (checkpointPrompt) {
-      placeholder = checkpointPrompt.length > 80
-        ? `${checkpointPrompt.slice(0, 77)}...`
-        : checkpointPrompt;
-    }
-  }
-  if (chatInput) chatInput.placeholder = placeholder;
-
-  chatInput?.classList.add("input--awaiting");
-
-  if (lastInputSource === "voice" && accumulatedTutorText) {
-    dispatchTTS(accumulatedTutorText).catch((error) => {
-      console.warn("Sonic TTS failed:", error);
-    });
-  }
-}
-
-function beginGuidedBuild() {
-  const plan = activePlan();
-  if (!plan) return;
-  if (isAnalyticPlan(plan)) {
-    tutorState.setMode("guided");
-    tutorState.setPhase("guided_build");
-    tutorState.setLearningStage("build");
-    applyAnalyticSceneState({ forceCamera: true });
-    updateStageRail();
-    announceCurrentStage(true);
-    return;
-  }
-  tutorState.setMode("guided");
-  tutorState.setPhase("guided_build");
-  tutorState.setLearningStage("build");
-  sceneApi?.cancelPreviewAction?.();
-  sceneApi?.clearScene?.();
-  lastSceneFeedback = "";
-  setCheckpointState(null);
-  updateStageRail();
-  announceCurrentStage(true);
-  scheduleAssessment();
-}
-
-function beginManualBuild() {
-  const plan = activePlan();
-  if (!plan) return;
-  if (isAnalyticPlan(plan)) {
-    applyAnalyticSceneState({ forceCamera: true });
-    return;
-  }
-  tutorState.setMode("manual");
-  tutorState.setPhase("manual_build");
-  tutorState.setLearningStage("build");
-  sceneApi?.cancelPreviewAction?.();
-  sceneApi?.clearScene?.();
-  lastSceneFeedback = "";
-  setCheckpointState(null);
-  updateStageRail();
-  announceCurrentStage(true);
-  scheduleAssessment();
-}
-
-function syncStepFromTutorResponse(response = {}, plan = activePlan()) {
-  const stageId = response.assessment?.nextStage?.id || response.stageStatus?.currentStageId || null;
-  if (!plan?.lessonStages?.length || !stageId) return;
-  const stageIndex = plan.lessonStages.findIndex((stage) => stage.id === stageId);
-  if (stageIndex >= 0) {
-    tutorState.goToStep(stageIndex);
-  }
-}
-
-function syncLearningStageFromTutorResponse(response = {}, plan = activePlan()) {
-  const nextLearningStage = response.nextLearningStage || response.assessment?.nextLearningStage || null;
-  if (!nextLearningStage || nextLearningStage === tutorState.learningStage) {
-    return;
-  }
-  tutorState.setLearningStage(nextLearningStage);
-  if (nextLearningStage === "predict") {
-    tutorState.resetPrediction(plan?.learningMoments?.predict?.prompt || "");
-  }
-}
-
-function actionStateFromResponse(response = {}, plan = activePlan()) {
-  if (Array.isArray(response.actions) || response.actionState) {
-    return {
-      actions: Array.isArray(response.actions) ? response.actions : [],
-      stageType: response.actionState?.stageType || getCurrentStage(plan)?.learningStage || tutorState.learningStage,
-      lastVerdict: response.actionState?.lastVerdict || response.conceptVerdict?.verdict || null,
-    };
-  }
-  return stageActionsForClient(plan, tutorState.latestAssessment);
-}
-
-function syncSolutionRevealState(response = {}) {
-  if (Array.isArray(response.solutionReveal?.sections)) {
-    currentSolutionSections = response.solutionReveal.sections;
-  }
-}
-
-function applyVoiceTurnResult(response = {}, plan = activePlan()) {
-  const draft = voiceStreamDraft;
-  const inputTranscript = String(response.inputTranscript || "").trim();
-  const assistantText = String(response.assistantText || "").trim();
-
-  if (inputTranscript) {
-    tutorState.addMessage("user", inputTranscript);
-  }
-  if (assistantText) {
-    tutorState.addMessage("assistant", assistantText);
+  if (!actions?.length) {
+    // Generate context-specific fallbacks from scene
+    const ctx = getContext();
+    const firstObj = ctx.visibleObjects?.[0];
+    actions = [
+      firstObj
+        ? { label: `Highlight the ${firstObj}`, action: 'highlight_vector', target: firstObj, variant: 'scene' }
+        : { label: 'Show me the lines', action: 'highlight_vector', target: 'all_lines', variant: 'scene' },
+      { label: 'What is the formula', action: 'show_formula', target: 'formula', variant: '' },
+      { label: 'Calculate step by step', action: 'trigger_stage_4', target: null, variant: 'primary' },
+    ];
   }
 
-  const verdictStage = tutorState.learningStage;
-  applyDeferredStageAdvanceOverride(response, plan, {
-    consumedLearnerInput: Boolean(inputTranscript),
+  // Filter out generic placeholders
+  const filtered = actions.filter(a =>
+    a.label !== 'What should I notice?' &&
+    a.label !== 'How do I start?' &&
+    !a.label.startsWith('Tell me more')
+  );
+
+  filtered.forEach(action => {
+    const btn = document.createElement('button');
+    const cls = action.variant === 'primary' ? 'qa-btn qa-btn--primary'
+              : action.variant === 'scene'   ? 'qa-btn qa-btn--scene'
+              : 'qa-btn';
+    btn.className = cls;
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => _handleAction(action));
+    wrap.appendChild(btn);
   });
-  syncStepFromTutorResponse(response, plan);
-  syncLearningStageFromTutorResponse(response, plan);
-
-  if (response.conceptVerdict) {
-    tutorState.addVerdict({
-      stage: verdictStage,
-      stageGoal: response.conceptVerdict.stageGoal || "",
-      verdict: response.conceptVerdict.verdict,
-      what_was_right: response.conceptVerdict.what_was_right,
-      gap: response.conceptVerdict.gap,
-      misconception_type: response.conceptVerdict.misconception_type,
-    });
-  }
-
-  if (response.assessment) {
-    tutorState.setAssessment(response.assessment);
-  } else if (!plan) {
-    tutorState.setAssessment(null);
-  } else {
-    void syncAssessment();
-  }
-
-  if (response.completionState?.complete) {
-    completeLesson({
-      reason: response.completionState.reason || "correct-answer",
-      revealSolution: response.completionState.reason === "revealed-solution" || Boolean(response.sceneDirective?.revealFullSolution),
-    });
-  }
-
-  syncSolutionRevealState(response);
-
-  const actionState = plan
-    ? actionStateFromResponse(response, plan)
-    : { actions: [], stageType: tutorState.learningStage, lastVerdict: null };
-  if (draft?.assistantMessage) {
-    draft.assistantMessage.dataset.completion = response.completionState?.complete ? "true" : "false";
-    renderMessageActions(draft.assistantMessage, actionState);
-    if (response.solutionReveal?.isSolutionReveal) {
-      const solutionEl = solutionTranscriptElement(draft.assistantMessage);
-      if (solutionEl) {
-        solutionEl.innerHTML = renderRichTextHtml(assistantText);
-      }
-    }
-  }
-
-  if (response.focusTargets?.length) {
-    focusStageTargets(response.focusTargets, { selectFirst: true });
-  }
-  if (response.checkpoint && !isLessonComplete()) {
-    setCheckpointState(response.checkpoint);
-  } else if (!plan || isLessonComplete()) {
-    setCheckpointState(null);
-  }
-  if (response.sceneDirective) {
-    applySceneDirective(response.sceneDirective, { forceCamera: true });
-  }
-  if (response.sceneCommand) {
-    applyAssistantSceneCommand(response.sceneCommand);
-  }
-
-  lastSceneFeedback = assistantText || lastSceneFeedback;
-  renderAssessment(plan ? tutorState.latestAssessment : null);
-  renderSceneInfo();
-  updateStageRail();
-  if (plan && !isLessonComplete() && shouldAnnounceStageAfterResponse(assistantText, plan)) {
-    announceCurrentStage();
-  }
 }
 
-async function sendTutorMessage(messageText, options = {}) {
-  const payload = messageText && typeof messageText === "object" && "userMessage" in messageText
-    ? { ...messageText }
-    : buildTutorPayload(messageText);
-  const plan = payload.plan || activePlan();
-  const text = String(payload.userMessage || "").trim();
-  if (!text) return;
-
-  if (tutorAnnotationManager) {
-    tutorAnnotationManager.clear();
+function _handleAction(action) {
+  switch (action.action) {
+    case 'highlight_vector':
+    case 'highlight_point':
+    case 'highlight_plane':
+    case 'pulse_connector': {
+      const target = action.target || 'all_lines';
+      window.world?.highlightObject?.(target, action.action);
+      break;
+    }
+    case 'show_formula': {
+      // Switch to algebra tab and scroll into view
+      document.querySelector('.ptab[data-tab="algebra"]')?.click();
+      _renderAlgebraTab();
+      break;
+    }
+    case 'trigger_stage_4': {
+      _triggerForceAnswer();
+      break;
+    }
+    default: {
+      // Treat as a chat message
+      if (action.label) _handleUserMessage(action.label);
+    }
   }
+  _clearQuickActions();
+}
 
-  if (options.showUserMessage !== false) {
-    addTranscriptMessage("user", options.userLabel || text);
-  }
-  tutorState.addMessage("user", text);
+// ═══════════════════════════════════════════════════════
+// FORCE ANSWER (after 3 questions)
+// ═══════════════════════════════════════════════════════
+function _triggerForceAnswer() {
+  if (!state.plan) return;
+  _showThinking(true);
+  sendTutorMessage('__FORCE_ANSWER__', { forceAnswer: true });
+}
 
-  // Live counter — "messages sent"
-  _sessionMessageCount += 1;
-  const msgCountEl = document.getElementById("session-concepts-explored");
-  if (msgCountEl) msgCountEl.textContent = String(_sessionMessageCount);
+// ═══════════════════════════════════════════════════════
+// TUTOR MESSAGE SENDING (SSE streaming)
+// ═══════════════════════════════════════════════════════
+async function _handleUserMessage(text) {
+  if (!text.trim()) return;
 
-  const typing = addTranscriptMessage("tutor", "...");
-  typing?.classList.add("loading-dots");
-  let streamedText = "";
-  let pendingVerdict = null;
-  let pendingStage = null;
-  let pendingLearningStage = null;
+  state.socraticQuestionCount++;
+  _clearQuickActions();
+  _appendUserMessage(text);
+  _showThinking(true);
 
-  // Keep Cognitive Console hidden and activate thinking state
-  const cogConsole = document.querySelector("#cognitiveConsole");
-  if (cogConsole) {
-    cogConsole.classList.add("hidden");
-    const allNodes = cogConsole.querySelectorAll(".agent-node");
-    allNodes.forEach(node => {
-      node.classList.add("thinking");
-      const statusEl = node.querySelector(".agent-status");
-      if (statusEl) statusEl.textContent = "thinking...";
-    });
-  }
+  // Remove welcome state
+  const ws = welcomeState();
+  if (ws) ws.style.display = 'none';
+
+  await sendTutorMessage(text);
+}
+
+export async function sendTutorMessage(message, extraPayload = {}) {
+  _showThinking(true);
+
+  const ctx = getContext();
+  const payload = {
+    message,
+    sessionId: state.sessionId,
+    plan: state.plan,
+    sceneContext: {
+      currentSceneSpec: ctx.currentSceneSpec,
+      visibleObjects: ctx.visibleObjects,
+      studentAction: ctx.studentAction,
+      sceneType: ctx.sceneType,
+    },
+    confusionMetrics: {
+      questionCount: state.socraticQuestionCount,
+      forceAnswer: state.socraticQuestionCount >= 3 || extraPayload.forceAnswer,
+    },
+    ...extraPayload,
+  };
 
   try {
-    await askTutor({
-      ...payload,
-      onMeta: (meta) => {
-        // Update Cognitive Console with agent thoughts if present
-        const agentThoughts = meta?.agentThoughts;
-        if (agentThoughts && cogConsole) {
-          const agentMap = {
-            Mathematician: "mathematician",
-            Pedagogue: "pedagogue",
-            SceneArchitect: "architect",
-            SocraticTutor: "tutor"
-          };
-          for (const [key, id] of Object.entries(agentMap)) {
-            const thought = agentThoughts[key];
-            if (thought) {
-              const logEl = document.querySelector(`#agentLog-${id}`);
-              const nodeEl = document.querySelector(`#agentNode-${id}`);
-              const statusEl = nodeEl?.querySelector(".agent-status");
-              if (logEl) logEl.textContent = thought;
-              if (statusEl) statusEl.textContent = "complete";
-              nodeEl?.classList.remove("thinking");
+    const res = await fetch('/api/tutor/freeform', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    let streamingBubble = null;
+    let currentEventType = 'text';
+    let buffer = '';
+
+    const flush = (line) => {
+      if (line.startsWith('event:')) {
+        currentEventType = line.slice(6).trim();
+        return;
+      }
+      if (line.startsWith('data:')) {
+        const raw = line.slice(5).trim();
+        if (raw === '[DONE]') return;
+        try {
+          const parsed = JSON.parse(raw);
+
+          if (currentEventType === 'tutorStage') {
+            _showThinking(false);
+            handleProgressiveStageChunk(parsed);
+            return;
+          }
+
+          if (currentEventType === 'actions') {
+            _showThinking(false);
+            renderQuickActions(parsed.actions || []);
+            return;
+          }
+
+          if (currentEventType === 'studentModel') {
+            window.updateStudentModelUI?.(parsed);
+            return;
+          }
+
+          if (currentEventType === 'confusion') {
+            if (parsed.state) {
+              const { dispatchConfusion } = await import('../core/socraticCoachEvents.js');
+              dispatchConfusion(parsed.state);
+            }
+            return;
+          }
+
+          // Generic text chunk
+          if (parsed.text || parsed.chunk || parsed.content) {
+            _showThinking(false);
+            const chunk = parsed.text ?? parsed.chunk ?? parsed.content ?? '';
+            if (!streamingBubble) streamingBubble = appendStreamingMessage();
+            if (streamingBubble) {
+              streamingBubble.innerHTML += _processText(chunk);
+              _scrollToBottom();
+            }
+          }
+
+        } catch {
+          // plain text chunk
+          if (raw && !raw.startsWith('{')) {
+            _showThinking(false);
+            if (!streamingBubble) streamingBubble = appendStreamingMessage();
+            if (streamingBubble) {
+              streamingBubble.textContent += raw;
+              _scrollToBottom();
             }
           }
         }
-        // Update live student model UI
-        if (meta?.studentModel) {
-          updateStudentModelUI(meta.studentModel);
-        }
-      },
-      onChunk: (chunk, stageType, payload) => {
-        if (stageType) {
-          typing?.classList.remove("loading-dots");
-          handleProgressiveStageChunk(typing, chunk, stageType, payload);
-        } else {
-          streamedText += chunk;
-          accumulatedTutorText += chunk;
-          typing?.classList.remove("loading-dots");
-          setTranscriptMessageText(typing, streamedText, { role: "tutor", completion: false });
-        }
-      },
-      onAssessment: (assessment) => {
-        if (assessment?.summary) {
-          tutorState.setAssessment(assessment);
-          renderAssessment(assessment);
-          renderSceneInfo();
-          updateStageRail();
-        }
-        pendingVerdict = assessment?.verdict ?? null;
-        pendingStage = assessment?.nextStage ?? null;
-        pendingLearningStage = assessment?.nextLearningStage ?? null;
-      },
-      onDone: async ({ text: finalText, assessment, meta } = {}) => {
-        const response = {
-          text: finalText || streamedText || "I could not generate a tutor reply.",
-          assessment,
-          nextLearningStage: pendingLearningStage,
-          ...(meta || {}),
-        };
-        const conceptVerdict = response.conceptVerdict || (pendingVerdict
-          ? {
-            verdict: pendingVerdict,
-            what_was_right: "",
-            gap: null,
-            misconception_type: null,
-          }
-          : null);
-        const verdict = conceptVerdict?.verdict || pendingVerdict || null;
-        if (verdict === "INCORRECT" || verdict === "PARTIAL" || verdict === "STUCK") {
-          confusionTracker.recordError();
-        }
-        applyDeferredStageAdvanceOverride(response, plan, {
-          consumedLearnerInput: true,
-        });
-        pendingStage = response.assessment?.nextStage ?? pendingStage;
-        pendingLearningStage = response.assessment?.nextLearningStage ?? response.nextLearningStage ?? pendingLearningStage;
+      }
+    };
 
-        typing?.classList.remove("loading-dots");
-        if (typing) {
-          typing.dataset.completion = response.completionState?.complete ? "true" : "false";
-        }
-        const hasAccordion = typing && typing.querySelector('.progressive-accordion');
-        if (!hasAccordion) {
-          setTranscriptMessageText(typing, response.text, {
-            role: "tutor",
-            completion: Boolean(response.completionState?.complete),
-          });
-        }
-
-        syncSolutionRevealState(response);
-        if (tutorAnnotationManager && response.tutorAnnotations) {
-          tutorAnnotationManager.render(response.tutorAnnotations);
-        }
-        const verdictStage = tutorState.learningStage;
-        syncStepFromTutorResponse(response, plan);
-        syncLearningStageFromTutorResponse(response, plan);
-
-        if (conceptVerdict?.verdict) {
-          tutorState.addVerdict({
-            stage: verdictStage,
-            stageGoal: conceptVerdict.stageGoal || "",
-            verdict: conceptVerdict.verdict,
-            what_was_right: conceptVerdict.what_was_right,
-            gap: conceptVerdict.gap,
-            misconception_type: conceptVerdict.misconception_type,
-          });
-        }
-
-        if (response.completionState?.complete) {
-          completeLesson({
-            reason: response.completionState.reason || "correct-answer",
-            revealSolution: response.completionState.reason === "revealed-solution" || Boolean(response.sceneDirective?.revealFullSolution),
-          });
-        }
-
-        const actionState = options.resolveActions
-          ? options.resolveActions(response, { plan, verdict, typing })
-          : actionStateFromResponse(response, plan);
-        renderMessageActions(typing, actionState, streamedText || response.text);
-        if (response.solutionReveal?.isSolutionReveal) {
-          const solutionEl = solutionTranscriptElement(typing);
-          if (solutionEl) {
-            solutionEl.innerHTML = renderRichTextHtml(accumulatedTutorText || response.text);
-          }
-        }
-        tutorState.addMessage("assistant", response.text);
-
-        if (response.assessment?.summary) {
-          tutorState.setAssessment(response.assessment);
-        } else if (!plan) {
-          tutorState.setAssessment(null);
-        }
-        if (response.studentModel && window.updateStudentModelUI) {
-          window.updateStudentModelUI(response.studentModel);
-        }
-        if (response.focusTargets?.length) {
-          focusStageTargets(response.focusTargets, { selectFirst: true });
-        }
-        if (response.checkpoint && !isLessonComplete()) {
-          setCheckpointState(response.checkpoint);
-        } else {
-          setCheckpointState(null);
-        }
-        if (response.sceneDirective) {
-          applySceneDirective(response.sceneDirective, { forceCamera: true });
-        }
-        if (response.sceneCommand) {
-          applyAssistantSceneCommand(response.sceneCommand);
-        }
-
-        lastSceneFeedback = response.text || lastSceneFeedback;
-        renderAssessment(plan ? tutorState.latestAssessment : null);
-        renderSceneInfo();
-        updateStageRail();
-        if (plan && !isLessonComplete() && shouldAnnounceStageAfterResponse(response.text, plan)) {
-          announceCurrentStage();
-        }
-
-        await options.afterResponse?.(response, { plan, verdict, typing });
-        returnControlToLearner({
-          verdict,
-          stage: pendingStage,
-        });
-        pendingVerdict = null;
-        pendingStage = null;
-        pendingLearningStage = null;
-      },
-    });
-  } catch (error) {
-    typing?.classList.remove("loading-dots");
-    setTranscriptMessageText(typing, `Error: ${error.message}`, { role: "tutor", completion: false });
-    awaitingLearnerResponse = true;
-    if (chatInput) {
-      chatInput.disabled = false;
-      chatInput.focus();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      lines.forEach(flush);
     }
-    if (chatSend) chatSend.disabled = false;
-    setVoiceButtonState({ active: voiceModeEnabled, disabled: false });
-  }
-}
+    if (buffer) flush(buffer);
 
-async function handleExplain() {
-  await handleLearnerInput(`I'm stuck. Give me a small hint about what to focus on in the scene, without giving me the answer.`, {
-    input_source: "text",
-    user_label: "I need a hint",
-  });
-}
-
-async function requestTutorHint(action = {}) {
-  const gap = action.payload?.gap || latestVerdictGap();
-  const hintType = action.payload?.hint_type || deriveHintTypeFromLabel(action.label || "");
-  tutorState.useHint();
-  await sendTutorMessage({
-    ...buildTutorPayload("__hint_request__"),
-    userMessage: "__hint_request__",
-    requires_evaluation: false,
-    hint_type: hintType,
-    gap: hintType === "gap" ? gap || "" : "",
-    hint_level: tutorState.hint_state.current_stage_hints,
-    hint_state: { ...(tutorState.hint_state || {}) },
-  }, {
-    showUserMessage: false,
-    resolveActions: (_response, { plan }) => resolveHintFollowUpActionState({
-      plan,
-      stage: getCurrentStage(plan),
-      learningState: tutorState.snapshot(),
-      completionState: tutorState.completionState,
-    }),
-  });
-}
-
-async function requestConnectionBridge(plan = activePlan()) {
-  const nextStageActionState = resolveTutorActionState({
-    plan,
-    stage: getCurrentStage(plan),
-    learningState: tutorState.snapshot(),
-    conceptVerdict: { verdict: "CORRECT" },
-    completionState: tutorState.completionState,
-    responseKind: "connection_followup",
-  });
-  await sendTutorMessage({
-    ...buildTutorPayload("__connection_request__"),
-    userMessage: "__connection_request__",
-    requires_evaluation: false,
-    hint_state: { ...(tutorState.hint_state || {}) },
-  }, {
-    showUserMessage: false,
-    resolveActions: () => (isAutoAdvanceEnabled(plan) ? {
-      ...latestTutorActionState,
-      actions: [],
-    } : nextStageActionState),
-    afterResponse: async (_response, { typing }) => {
-      if (!isAutoAdvanceEnabled(plan)) return;
-      clearLessonAutoAdvanceTimer();
-      lessonAutoAdvanceTimer = window.setTimeout(() => {
-        if (latestTutorActionMessage !== typing) return;
-        renderMessageActions(typing, {
-          ...latestTutorActionState,
-          actions: [],
-        });
-        advanceLessonStage();
-      }, 2000);
-    },
-  });
-}
-
-async function loadSimilarProblem(plan = activePlan()) {
-  if (!plan) return;
-  const suggestions = tutorState.similarQuestions?.length
-    ? tutorState.similarQuestions
-    : (await requestSimilarTutorQuestions({ plan, limit: 1 }))?.suggestions || [];
-  const nextPrompt = suggestions[0]?.prompt || "";
-  if (!nextPrompt) return;
-  await handleQuestionSubmit({ questionText: nextPrompt, imageFile: null });
-}
-
-async function handleComposerSubmit() {
-  const plan = activePlan();
-  if (!awaitingLearnerResponse) return;
-  const text = chatInput?.value?.trim();
-  if (!text) return;
-
-  chatInput.value = "";
-  updateMathPreview(chatMathPreview, "");
-  resizeChatComposer();
-
-  if (shouldStartLessonFromComposer({
-    text,
-    hasPlan: Boolean(plan),
-    lessonComplete: isLessonComplete(),
-  })) {
-    await handleQuestionSubmit({ questionText: text, imageFile: null });
-    return;
-  }
-
-  await handleLearnerInput(text, { input_source: "text" });
-}
-
-function buildVoiceContext(plan = activePlan()) {
-  const currentStage = getCurrentStage(plan);
-  return {
-    plan,
-    sceneSnapshot: currentSnapshot(),
-    sceneContext: sceneContextPayload(plan, tutorState.latestAssessment),
-    learningState: tutorState.snapshot(),
-    contextStepId: tutorState.getCurrentStep()?.id || null,
-    requires_evaluation: currentStage?.requires_evaluation ?? false,
-  };
-}
-
-function standbyVoiceStatus() {
-  return voiceModeEnabled ? "Voice mode on. Start speaking any time." : "";
-}
-
-function setVoiceStatusForState(state = voiceSessionState) {
-  updateVoiceVisualState(state);
-  if (state === "connecting") {
-    updateVoiceStatus("Connecting voice session...", "ready");
-    return;
-  }
-  if (state === "listening") {
-    updateVoiceStatus("Listening...", "ready");
-    return;
-  }
-  if (state === "processing") {
-    updateVoiceStatus(lastVoiceTranscript ? `ImmersiveSense heard: ${lastVoiceTranscript}` : "Processing...", "ready");
-    return;
-  }
-  if (state === "responding") {
-    updateVoiceStatus("ImmersiveSense is responding...", "ready");
-    return;
-  }
-  updateVoiceStatus(standbyVoiceStatus(), voiceModeEnabled ? "ready" : "hidden");
-}
-
-function handleVoiceSessionEvent(event = {}) {
-  switch (event.type) {
-    case "state":
-      voiceSessionState = event.state || "idle";
-      if (voiceSessionState === "idle" && localVoicePlaybackActive()) {
-        showVoicePlaybackStatus();
-        queueVoicePlaybackRelease();
-        return;
-      }
-      setVoiceStatusForState(voiceSessionState);
-      return;
-    case "assessment":
-      lastVoiceAssessment = event;
-      return;
-    case "input_transcript":
-      setVoiceTranscript(event.content || "");
-      setVoiceStatusForState("processing");
-      void handleLearnerInput(event.content || "", {
-        input_source: "voice",
-        skip_server_call: true,
-        show_user_message: false,
-      });
-      return;
-    case "assistant_text":
-      setVoiceAssistantMessage(event.content || "", {
-        final: event.generationStage === "FINAL",
-      });
-      return;
-    case "assistant_audio":
-      if (!currentVoiceDraft().assistantAudioStarted) {
-        currentVoiceDraft().assistantAudioStarted = true;
-        voiceAssistantBargeInUnlockAt = performance.now() + 1200;
-      }
-      ensureVoiceAudioPlayer()
-        .appendBase64Chunk(event.audioBase64, event.sampleRateHertz || 24000)
-        .catch((error) => {
-          console.error("Voice audio playback failed:", error);
-        });
-      return;
-    case "interrupted":
-      voiceTurnOpen = false;
-      voiceUserSpeaking = false;
-      voiceAssistantBargeInUnlockAt = 0;
-      voicePlaybackSyncToken += 1;
-      ensureVoiceAudioPlayer().stop();
-      setVoiceStatusForState("idle");
-      return;
-    case "done": {
-      const draft = currentVoiceDraft();
-      const hadAssistantAudio = Boolean(draft.assistantAudioStarted);
-      if (event.inputTranscript) {
-        setVoiceTranscript(event.inputTranscript);
-      }
-      setVoiceAssistantMessage(event.assistantText || "ImmersiveSense did not return a voice reply.", {
-        final: true,
-      });
-      voiceConversationId = event.conversationId || voiceConversationId;
-      voiceTurnOpen = false;
-      voiceUserSpeaking = false;
-      applyVoiceTurnResult(event);
-      if (!hadAssistantAudio) {
-        accumulatedTutorText = event.assistantText || "";
-      }
-      voiceStreamDraft = null;
-      if (hadAssistantAudio && localVoicePlaybackActive()) {
-        showVoicePlaybackStatus();
-        queueVoicePlaybackRelease();
-      } else {
-        voiceAssistantBargeInUnlockAt = hadAssistantAudio ? performance.now() + 320 : 0;
-        setVoiceStatusForState("idle");
-      }
-      returnControlToLearner({
-        verdict: lastVoiceAssessment?.verdict || event.conceptVerdict?.verdict || null,
-        stage: getCurrentStage(),
-      });
-      if (lastInputSource === "voice") {
-        document.dispatchEvent(new CustomEvent("demo:voice-turn-complete"));
-      }
-      return;
+  } catch (err) {
+    console.error('[TutorController] sendTutorMessage error:', err);
+    appendAiMessage(`Something went wrong: ${err.message}. Please try again.`, 'error');
+  } finally {
+    _showThinking(false);
+    // After 3 questions, auto-force if not already done
+    if (state.socraticQuestionCount >= 3 && !extraPayload.forceAnswer) {
+      setTimeout(() => dispatchForceCalculation(), 200);
     }
-    default:
-      return;
   }
 }
 
-async function ensureVoiceSessionConnected() {
-  if (voiceConversationId && voiceSessionUnsubscribe) {
-    return voiceConversationId;
-  }
+// ═══════════════════════════════════════════════════════
+// MOMENT STRIP
+// ═══════════════════════════════════════════════════════
+export function advanceMoment(name) {
+  if (state.momentComplete[name]) return;
+  state.momentComplete[name] = true;
+  _updateMomentStripUI();
+}
 
-  if (!voiceConversationId) {
-    const session = await createVoiceSession();
-    voiceConversationId = session.conversationId || session.sessionId || voiceConversationId;
-  }
-  closeVoiceSessionStream();
-  voiceSessionUnsubscribe = subscribeToVoiceSession(voiceConversationId, {
-    onEvent: handleVoiceSessionEvent,
-    onError: (error) => {
-      console.error("Voice session stream error:", error);
-      updateVoiceStatus("Voice session disconnected. Click the mic to reconnect.", "error");
-      closeVoiceSessionStream();
-    },
+export function resetMomentStrip() {
+  state.momentComplete = { observe: false, explore: false, predict: false, verify: false };
+  _updateMomentStripUI();
+}
+
+function _updateMomentStripUI() {
+  const order = ['observe', 'explore', 'predict', 'verify', 'reflect'];
+  const moments = document.querySelectorAll('.moment[data-moment]');
+
+  // Find last completed index
+  let lastDoneIdx = -1;
+  order.forEach((name, i) => {
+    if (state.momentComplete[name]) lastDoneIdx = i;
   });
-  return voiceConversationId;
-}
+  const currentIdx = lastDoneIdx + 1;
 
-function queueVoiceAudioChunk(chunk) {
-  if (!chunk?.audioBase64) {
-    return;
-  }
-  if (!voiceConversationId || !voiceTurnOpen || !voiceUserSpeaking) {
-    rememberVoiceBufferedChunk(chunk);
-    return;
-  }
-  voiceAudioUploadChain = voiceAudioUploadChain
-    .then(() => appendVoiceSessionAudio({
-      sessionId: voiceConversationId,
-      audioBase64: chunk.audioBase64,
-      mimeType: chunk.mimeType,
-    }))
-    .catch((error) => {
-      console.error("Voice audio upload failed:", error);
-      updateVoiceStatus(`Voice error: ${error.message}`, "error");
-    });
-}
+  moments.forEach((el, i) => {
+    el.classList.remove('is-done', 'is-current', 'is-upcoming');
+    // Remove existing ring
+    el.querySelector('.moment__ring')?.remove();
 
-async function flushBufferedVoiceAudio() {
-  const bufferedChunks = [...voiceBufferedChunks];
-  clearVoiceBufferedChunks();
-  for (const chunk of bufferedChunks) {
-    queueVoiceAudioChunk(chunk);
-  }
-  await voiceAudioUploadChain;
-}
-
-async function interruptActiveVoiceTurn() {
-  if (!voiceConversationId || !voiceTurnOpen) {
-    return;
-  }
-  voiceTurnOpen = false;
-  voiceUserSpeaking = false;
-  clearVoiceBufferedChunks();
-  ensureVoiceAudioPlayer().stop();
-  try {
-    await interruptVoiceSessionTurn(voiceConversationId);
-  } catch (error) {
-    console.error("Voice interrupt failed:", error);
-    updateVoiceStatus(`Voice error: ${error.message}`, "error");
-  }
-}
-
-async function startVoiceConversationTurn() {
-  if (voiceTurnOpen) return;
-  if (voiceTurnStartPromise) {
-    await voiceTurnStartPromise.catch(() => {});
-    return;
-  }
-
-  voiceTurnStartPromise = (async () => {
-    try {
-      const sessionId = await ensureVoiceSessionConnected();
-      lastVoiceAssessment = null;
-      resetVoiceDraft();
-      voiceAudioUploadChain = Promise.resolve();
-      const voiceContext = buildVoiceContext();
-      const sessionStart = await startVoiceSessionTurn({
-        sessionId,
-        mode: "coach",
-        context: voiceContext,
-        playbackMode: "auto",
-        requires_evaluation: voiceContext.requires_evaluation ?? false,
-      });
-      if (sessionStart.fallbackUsed) {
-        updateVoiceStatus("Voice replied in captions.", "ready");
-        return;
-      }
-      voiceTurnOpen = true;
-      await flushBufferedVoiceAudio();
-      updateVoiceStatus("Listening...", "ready");
-    } catch (error) {
-      console.error("Voice turn start failed:", error);
-      updateVoiceStatus(`Voice error: ${error.message}`, "error");
-      voiceTurnOpen = false;
-    } finally {
-      voiceTurnStartPromise = null;
-    }
-  })();
-
-  await voiceTurnStartPromise;
-}
-
-async function handleVoiceSpeechStart({ level } = {}) {
-  if (!voiceModeEnabled || voiceUserSpeaking) return;
-  if (!canInterruptAssistantWithSpeech(level)) {
-    return;
-  }
-  voiceUserSpeaking = true;
-  ensureVoiceAudioPlayer().stop();
-  if (voiceTurnOpen && voiceSessionState !== "listening") {
-    await interruptActiveVoiceTurn();
-  }
-  await startVoiceConversationTurn();
-}
-
-async function handleVoiceSpeechEnd() {
-  if (!voiceUserSpeaking) return;
-  voiceUserSpeaking = false;
-  if (voiceTurnStartPromise) {
-    await voiceTurnStartPromise.catch(() => {});
-  }
-  if (!voiceTurnOpen || !voiceConversationId) {
-    return;
-  }
-  updateVoiceStatus("Thinking...", "ready");
-  try {
-    await voiceAudioUploadChain;
-    await stopVoiceSessionTurn(voiceConversationId);
-  } catch (error) {
-    console.error("Voice turn stop failed:", error);
-    updateVoiceStatus(`Voice error: ${error.message}`, "error");
-  }
-}
-
-async function enableVoiceMode() {
-  if (voiceModeEnabled) return;
-  if (!navigator.mediaDevices?.getUserMedia) {
-    updateVoiceStatus("This browser cannot capture microphone audio.", "error");
-    return;
-  }
-
-  try {
-    await ensureVoiceSessionConnected();
-    voiceModeEnabled = true;
-    activeMicCapture = new MicrophoneCapture({
-      onChunk: queueVoiceAudioChunk,
-      onSpeechStart: (event) => {
-        void handleVoiceSpeechStart(event);
-      },
-      onSpeechEnd: () => {
-        void handleVoiceSpeechEnd();
-      },
-      collectChunks: false,
-    });
-    await activeMicCapture.start({
-      onChunk: queueVoiceAudioChunk,
-      onSpeechStart: (event) => {
-        void handleVoiceSpeechStart(event);
-      },
-      onSpeechEnd: () => {
-        void handleVoiceSpeechEnd();
-      },
-      collectChunks: false,
-    });
-    setVoiceButtonState({ active: true });
-    setVoiceStatusForState("idle");
-  } catch (error) {
-    console.error("Voice mode start failed:", error);
-    voiceModeEnabled = false;
-    if (activeMicCapture) {
-      await activeMicCapture.stop().catch(() => {});
-      activeMicCapture = null;
-    }
-    updateVoiceStatus(`Voice error: ${error.message}`, "error");
-    setVoiceButtonState({ active: false });
-  }
-}
-
-async function disableVoiceMode() {
-  voiceModeEnabled = false;
-  voiceUserSpeaking = false;
-  voiceSessionState = "idle";
-  clearVoiceBufferedChunks();
-  voiceAssistantBargeInUnlockAt = 0;
-  voicePlaybackSyncToken += 1;
-  if (activeMicCapture) {
-    await activeMicCapture.stop().catch(() => {});
-    activeMicCapture = null;
-  }
-  ensureVoiceAudioPlayer().stop();
-
-  if (voiceTurnStartPromise) {
-    await voiceTurnStartPromise.catch(() => {});
-  }
-  if (voiceTurnOpen && voiceConversationId) {
-    if (voiceSessionState === "listening") {
-      try {
-        await stopVoiceSessionTurn(voiceConversationId);
-      } catch (error) {
-        console.error("Voice stop on mode exit failed:", error);
+    if (i < currentIdx) {
+      el.classList.add('is-done');
+    } else if (i === currentIdx) {
+      el.classList.add('is-current');
+      const dw = el.querySelector('.moment-dot-wrap');
+      if (dw && !el.querySelector('.moment__ring')) {
+        const ring = document.createElement('span');
+        ring.className = 'moment__ring';
+        dw.insertBefore(ring, dw.firstChild);
       }
     } else {
-      await interruptActiveVoiceTurn();
+      el.classList.add('is-upcoming');
     }
-  }
-
-  voiceTurnOpen = false;
-  closeVoiceSessionStream();
-  setVoiceButtonState({ active: false });
-  updateVoiceStatus("", "hidden");
-}
-
-async function toggleVoiceMode() {
-  if (voiceModeTogglePromise) {
-    await voiceModeTogglePromise.catch(() => {});
-    return;
-  }
-  setVoiceButtonState({ active: voiceModeEnabled, disabled: true });
-  voiceModeTogglePromise = (voiceModeEnabled ? disableVoiceMode() : enableVoiceMode())
-    .finally(() => {
-      voiceModeTogglePromise = null;
-      setVoiceButtonState({ active: voiceModeEnabled, disabled: false });
-    });
-  await voiceModeTogglePromise;
-}
-
-function advanceLessonStage() {
-  const plan = activePlan();
-  if (!plan) return;
-
-  if (isAnalyticPlan(plan)) {
-    if (tutorState.currentStep < plan.lessonStages.length - 1) {
-      tutorState.nextStep();
-      lastSceneFeedback = "";
-      setCheckpointState(null);
-      updateStageRail();
-      applyAnalyticSceneState({ forceCamera: true });
-      announceCurrentStage(true);
-      return;
-    }
-    analyticFormulaVisible = true;
-    analyticFullSolutionVisible = true;
-    renderAnalyticPanels(plan);
-    completeLesson({ reason: "correct-answer", revealSolution: true });
-    updateStageRail();
-    return;
-  }
-
-  if (tutorState.learningStage === "orient") {
-    beginGuidedBuild();
-    return;
-  }
-
-  if (tutorState.learningStage === "build") {
-    if (tutorState.currentStep < plan.lessonStages.length - 1) {
-      tutorState.nextStep();
-      lastSceneFeedback = "";
-      setCheckpointState(null);
-      updateStageRail();
-      announceCurrentStage(true);
-      scheduleAssessment();
-      return;
-    }
-
-    tutorState.setLearningStage("predict");
-    tutorState.resetPrediction(plan.learningMoments?.predict?.prompt || "");
-    lastSceneFeedback = "";
-    setCheckpointState(null);
-    updateStageRail();
-    announceCurrentStage(true);
-    return;
-  }
-
-  if (tutorState.learningStage === "predict") {
-    if (!tutorState.predictionState.submitted) {
-      addTranscriptMessage("tutor", "Before we move on, type what you think will happen.");
-      return;
-    }
-    tutorState.setLearningStage("check");
-    lastSceneFeedback = "";
-    updateStageRail();
-    announceCurrentStage(true);
-    return;
-  }
-
-  if (tutorState.learningStage === "check") {
-    tutorState.setLearningStage("reflect");
-    lastSceneFeedback = "";
-    updateStageRail();
-    announceCurrentStage(true);
-    return;
-  }
-
-  if (tutorState.learningStage === "reflect") {
-    tutorState.setLearningStage("challenge");
-    lastSceneFeedback = "";
-    updateStageRail();
-    announceCurrentStage(true);
-  }
-}
-
-async function handleTutorAction(action = {}) {
-  switch (action.kind) {
-    case "freeform-prompt":
-      await handleLearnerInput(action.payload?.prompt || action.label || "Show me something interesting.", {
-        input_source: "text",
-        user_label: action.label || action.payload?.prompt || "Try that",
-      });
-      return;
-    case "clear-scene":
-      sceneApi?.clearScene?.();
-      setCheckpointState(null);
-      renderAssessment(activePlan() ? tutorState.latestAssessment : null);
-      renderSceneInfo();
-      updateStageRail();
-      renderAnnotations();
-      return;
-    case "start-suggested-question":
-      if (action.payload?.prompt) {
-        await handleQuestionSubmit({ questionText: action.payload.prompt, imageFile: null });
-      }
-      return;
-    default:
-      break;
-  }
-
-  const plan = activePlan();
-  if (!plan) return;
-
-  switch (action.kind) {
-    case "highlight-key-idea":
-      applyAnalyticSceneState({ forceCamera: true });
-      break;
-    case "show_formula":
-    case "show-formula":
-      if (analyticFormulaVisible && !formulaCard?.classList.contains("hidden")) {
-        scrollFormulaCardIntoView();
-        break;
-      }
-      analyticFormulaVisible = true;
-      analyticFormulaDismissed = false;
-      renderAnalyticPanels(plan);
-      scrollFormulaCardIntoView();
-      break;
-    case "show_hint":
-      await requestTutorHint(action);
-      break;
-    case "try_again":
-      focusComposerWithPlaceholder(action.payload?.gap || latestVerdictGap() || "Have another go");
-      break;
-    case "show_connection":
-      clearLessonAutoAdvanceTimer();
-      await requestConnectionBridge(plan);
-      break;
-    case "next_stage":
-    case "reveal-next-step":
-      renderMessageActions(latestTutorActionMessage, {
-        ...latestTutorActionState,
-        actions: [],
-      });
-      advanceLessonStage();
-      break;
-    case "view_solution":
-      if (tutorState.hint_state?.escalate_next !== true) {
-        break;
-      }
-      await revealWorkedSolution(plan);
-      break;
-    case "reveal-full-solution":
-      await revealWorkedSolution(plan);
-      break;
-    case "ask_followup":
-      focusComposerWithPlaceholder("What would you like to explore?");
-      break;
-    case "try_similar":
-      await loadSimilarProblem(plan);
-      break;
-    case "reset-view":
-      applyAnalyticSceneState({ forceCamera: true });
-      break;
-    case "start-guided-build":
-      beginGuidedBuild();
-      break;
-    case "build-manually":
-      beginManualBuild();
-      break;
-    case "preview-required-object": {
-      const preparedAction = fillPreviewActionObjectSpec(action, plan, tutorState.latestAssessment);
-      if (!preparedAction?.payload?.objectSpec) {
-        addTranscriptMessage("system", "There is nothing to preview yet. Ask the tutor to explain the stage first.");
-        return;
-      }
-
-      const preview = sceneApi?.previewAction?.(preparedAction.payload || preparedAction);
-      if (preview) {
-        focusStageTargets(preparedAction.payload.highlightTargets || [], { selectFirst: false });
-        addTranscriptMessage("tutor", `Here's ${preview.label || preview.shape}. Does this look right to you?`, {
-          actions: [
-            {
-              id: `${preparedAction.id}-confirm`,
-              label: "Place it",
-              kind: "confirm-preview",
-              payload: { stageId: preparedAction.payload?.stageId || null },
-            },
-            {
-              id: `${preparedAction.id}-cancel`,
-              label: "Not quite",
-              kind: "cancel-preview",
-              payload: { stageId: preparedAction.payload?.stageId || null },
-            },
-          ],
-        });
-      }
-      break;
-    }
-    case "confirm-preview": {
-      const placedObject = sceneApi?.confirmPreviewAction?.();
-      if (placedObject) {
-        scheduleAssessment();
-      }
-      break;
-    }
-    case "cancel-preview":
-      sceneApi?.cancelPreviewAction?.();
-      focusStageTargets(stageFocusTargets(plan));
-      break;
-    case "explain-stage":
-      await handleExplain();
-      break;
-    case "skip-stage":
-      if (tutorState.currentStep < plan.lessonStages.length - 1) {
-        tutorState.nextStep();
-        setCheckpointState(null);
-        updateStageRail();
-        announceCurrentStage(true);
-      } else {
-        advanceLessonStage();
-      }
-      break;
-    case "continue-stage":
-      setCheckpointState(null);
-      advanceLessonStage();
-      break;
-    case "show-mistake":
-      await handleLearnerInput(action.payload?.prompt || "Something doesn't look right. Give me a nudge about what to check in the scene.", {
-        input_source: "text",
-        user_label: "Something's off - help me see it",
-      });
-      break;
-    default:
-      break;
-  }
-}
-
-function handleSceneMutation(detail) {
-  const plan = activePlan();
-  if (!detail || detail.type !== "objects") return;
-
-  if (detail.reason === "drag" || detail.reason === "drag-end") {
-    if (detail.object?.position) {
-      confusionTracker.recordDrag(detail.object.position);
-    }
-  } else if (detail.reason === "place" || detail.reason === "remove") {
-    confusionTracker.recordInteraction();
-  }
-
-  if (!plan) {
-    if (detail.reason === "place" && detail.object?.label) {
-      lastSceneFeedback = `Placed ${detail.object.label}.`;
-    } else if (detail.reason === "drag-end" && detail.object?.label) {
-      lastSceneFeedback = `Updated ${detail.object.label}.`;
-    } else if (detail.reason === "remove" && detail.object?.label) {
-      lastSceneFeedback = `Removed ${detail.object.label}.`;
-    } else if (detail.reason === "assistant-replace") {
-      lastSceneFeedback = "Loaded a fresh scene.";
-    } else if (detail.reason === "assistant-merge") {
-      lastSceneFeedback = "Updated the scene.";
-    } else if (detail.reason === "assistant-remove") {
-      lastSceneFeedback = "Removed objects from the scene.";
-    } else if (detail.reason === "clear") {
-      lastSceneFeedback = "Cleared the scene.";
-    }
-
-    renderSceneInfo();
-    renderAssessment(null);
-    updateStageRail();
-    syncUnfoldDrawer();
-    renderAnnotations();
-    return;
-  }
-
-  if (isAnalyticPlan(plan) && detail.reason === "analytic-auto") {
-    renderSceneInfo();
-    updateStageRail();
-    return;
-  }
-  if (!isAnalyticPlan(plan) && detail.reason === "lesson-auto") {
-    renderSceneInfo();
-    updateStageRail();
-    syncUnfoldDrawer();
-    scheduleAssessment();
-    return;
-  }
-
-  if (detail.reason === "place" && detail.object?.label) {
-    lastSceneFeedback = `Placed ${detail.object.label}.`;
-  } else if (detail.reason === "drag-end" && detail.object?.label) {
-    lastSceneFeedback = `Updated ${detail.object.label}.`;
-  } else if (detail.reason === "remove" && detail.object?.label) {
-    lastSceneFeedback = `Removed ${detail.object.label}.`;
-  }
-
-  if (tutorState.learningStage === "predict" && tutorState.predictionState.submitted) {
-    tutorState.setLearningStage("check");
-  }
-
-  renderSceneInfo();
-  updateStageRail();
-  syncUnfoldDrawer();
-  scheduleAssessment();
-}
-
-function bindEvents() {
-  document.querySelectorAll(".panel-tab").forEach((button) => {
-    button.addEventListener("click", () => switchToTab(button.dataset.tab));
-  });
-
-  questionSubmit?.addEventListener("click", handleQuestionSubmit);
-  questionInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleQuestionSubmit();
-    }
-  });
-
-  questionImageInput?.addEventListener("change", () => {
-    const file = questionImageInput.files?.[0] || null;
-    setQuestionImageFile(file);
-  });
-
-  questionImageClear?.addEventListener("click", () => {
-    setQuestionImageFile(null);
-  });
-
-  questionInput?.addEventListener("paste", (event) => {
-    const file = extractPastedQuestionImageFile(event.clipboardData?.items);
-    if (!file) return;
-    event.preventDefault();
-    setQuestionImageFile(file, { announcePaste: true });
-  });
-
-  buildFromDiagramBtn?.addEventListener("click", () => questionImageInput?.click());
-  newQuestionBtn?.addEventListener("click", () => {
-    tutorState.reset();
-    void resetVoiceSessionState();
-    clearLessonAutoAdvanceTimer();
-    analyticFormulaVisible = false;
-    analyticFullSolutionVisible = false;
-    analyticFormulaDismissed = false;
-    lastAppliedAnalyticStageId = null;
-    lastAppliedAnalyticCameraBookmarkId = null;
-    deferredStageAdvance = null;
-    similarQuestionRequest = null;
-    currentSolutionSections = [];
-    latestTutorActionMessage = null;
-    latestTutorActionState = { actions: [], stageType: "orient", lastVerdict: null };
-    analyticOverlayManager?.clear();
-    sceneApi?.clearScene?.();
-    sceneApi?.clearFocus?.();
-    applyRepresentationDirective({ representationMode: "3d" });
-    clearTranscript();
-    hideEvidence();
-    renderAnalyticPanels(null);
-    renderAssessment(null);
-    renderSceneInfo();
-    updateStageRail();
-    setQuestionPanelCollapsed(false, { force: true });
-    questionSection?.classList.remove("is-compact");
-    if (questionInput) {
-      questionInput.value = "";
-      updateMathPreview(questionMathPreview, "");
-      questionInput.focus();
-    }
-    if (chatInput) {
-      chatInput.value = "";
-      updateMathPreview(chatMathPreview, "");
-      resizeChatComposer();
-      chatInput.classList.remove("input--awaiting");
-    }
-    awaitingLearnerResponse = true;
-    updateComposerState();
-  });
-  lessonPanelToggle?.addEventListener("click", () => {
-    if (!activePlan()) return;
-    const isCollapsed = questionSection?.classList.contains("is-collapsed");
-    setQuestionPanelCollapsed(!isCollapsed, { force: true });
-  });
-  stageRailNext?.addEventListener("click", () => {
-    const plan = activePlan();
-    if (!plan || !isAnalyticPlan(plan) || isLessonComplete()) return;
-    confusionTracker.recordSkip();
-    clearLessonAutoAdvanceTimer();
-    setCheckpointState(null);
-    advanceLessonStage();
-  });
-  voiceRecordBtn?.addEventListener("click", (event) => {
-    event.preventDefault();
-    void toggleVoiceMode();
-  });
-  voiceRecordBtn?.addEventListener("keydown", (event) => {
-    if ((event.key === " " || event.key === "Enter") && !event.repeat) {
-      event.preventDefault();
-      void toggleVoiceMode();
-    }
-  });
-  chatSend?.addEventListener("click", handleComposerSubmit);
-  chatInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleComposerSubmit();
-    }
-  });
-  checkpointYesBtn?.addEventListener("click", () => handleTutorAction({
-    id: "checkpoint-yes",
-    label: "Yes",
-    kind: "continue-stage",
-    payload: { stageId: currentLessonStage()?.id || null },
-  }));
-  checkpointUnsureBtn?.addEventListener("click", () => handleTutorAction({
-    id: "checkpoint-not-sure",
-    label: "Not sure",
-    kind: "show-mistake",
-    payload: { prompt: currentLessonStage()?.mistakeProbe || "Show me the mistake in this stage." },
-  }));
-  formulaCardRevealBtn?.addEventListener("click", () => {
-    if (analyticFullSolutionVisible) {
-      analyticFullSolutionVisible = false;
-      renderAnalyticPanels(activePlan());
-      return;
-    }
-    handleTutorAction({
-      id: "view_solution",
-      label: "Show me the solution",
-      kind: "view_solution",
-    });
-  });
-  formulaCardCloseBtn?.addEventListener("click", () => {
-    analyticFormulaVisible = false;
-    analyticFullSolutionVisible = false;
-    analyticFormulaDismissed = true;
-    renderAnalyticPanels(activePlan());
-  });
-  solutionDrawerClose?.addEventListener("click", () => {
-    analyticFullSolutionVisible = false;
-    renderAnalyticPanels(activePlan());
-  });
-
-  const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
-  const floatingSidebarToggleBtn = document.getElementById("floatingSidebarToggleBtn");
-  const workspaceEl = document.querySelector(".workspace");
-
-  sidebarCollapseBtn?.addEventListener("click", () => {
-    workspaceEl?.classList.add("sidebar-collapsed");
-    floatingSidebarToggleBtn?.classList.remove("hidden");
-  });
-
-  floatingSidebarToggleBtn?.addEventListener("click", () => {
-    workspaceEl?.classList.remove("sidebar-collapsed");
-    floatingSidebarToggleBtn?.classList.add("hidden");
   });
 }
 
-function bindDom() {
-  questionSection = document.querySelector(".question-section");
-  questionInput = document.getElementById("questionInput");
-  questionSubmit = document.getElementById("questionSubmit");
-  questionStatus = document.getElementById("questionStatus");
-  questionMathPreview = document.getElementById("questionMathPreview");
-  questionImageInput = document.getElementById("questionImageInput");
-  questionImageMeta = document.getElementById("questionImageMeta");
-  questionImagePreview = document.getElementById("questionImagePreview");
-  questionImageThumb = document.getElementById("questionImageThumb");
-  questionImageClear = document.getElementById("questionImageClear");
-  buildFromDiagramBtn = document.getElementById("questionImageTrigger");
-  lessonPanelToggle = document.getElementById("lessonPanelToggle");
-  lessonPanelSummary = document.getElementById("lessonPanelSummary");
-  chatMessages = document.getElementById("chatMessages");
-  chatInput = document.getElementById("chatInput");
-  chatSend = document.getElementById("chatSend");
-  chatMathPreview = document.getElementById("chatMathPreview");
-  voiceControl = document.getElementById("voiceControl");
-  voiceRecordBtn = document.getElementById("voiceRecordBtn");
-  voiceBars = document.getElementById("voiceBars");
-  voiceStatus = document.getElementById("voiceStatus");
-  stageRail = document.getElementById("stageRail");
-  stageRailProgress = document.getElementById("stageRailProgress");
-  stageRailGoal = document.getElementById("stageRailGoal");
-  stageRailNext = document.getElementById("stageRailNext");
-  chatCheckpoint = document.getElementById("chatCheckpoint");
-  chatCheckpointPrompt = document.getElementById("chatCheckpointPrompt");
-  checkpointYesBtn = document.getElementById("checkpointYesBtn");
-  checkpointUnsureBtn = document.getElementById("checkpointUnsureBtn");
-  sceneInfo = document.getElementById("sceneInfo");
-  sceneValidation = document.getElementById("sceneValidation");
-  cameraBookmarkList = document.getElementById("cameraBookmarkList");
-  objectCount = document.getElementById("objectCount");
-  stepIndicator = document.getElementById("stepIndicator");
-  formulaCard = document.getElementById("formulaCard");
-  formulaCardTitle = document.getElementById("formulaCardTitle");
-  formulaCardEquation = document.getElementById("formulaCardEquation");
-  formulaCardExplanation = document.getElementById("formulaCardExplanation");
-  formulaCardRevealBtn = document.getElementById("formulaCardRevealBtn");
-  formulaCardCloseBtn = document.getElementById("formulaCardCloseBtn");
-  solutionDrawer = document.getElementById("solutionDrawer");
-  solutionDrawerTitle = document.getElementById("solutionDrawerTitle");
-  solutionDrawerAnswer = document.getElementById("solutionDrawerAnswer");
-  solutionDrawerAnswerValue = document.getElementById("solutionDrawerAnswerValue");
-  solutionDrawerSteps = document.getElementById("solutionDrawerSteps");
-  solutionDrawerClose = document.getElementById("solutionDrawerClose");
-  newQuestionBtn = document.getElementById("newQuestionBtn");
-}
+// ═══════════════════════════════════════════════════════
+// CONFUSION ALERT
+// ═══════════════════════════════════════════════════════
+function _showConfusionAlert(confState) {
+  const c = chat();
+  if (!c) return;
+  // Remove existing alerts to avoid stacking
+  c.querySelectorAll('.alert-confusion').forEach(a => a.remove());
 
-function debounce(func, wait) {
-  let timeout;
-  return function(...args) {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => func.apply(this, args), wait);
-  };
-}
-
-function handleProgressiveStageChunk(container, content, stageType, payload) {
-  const STAGE_TITLES = {
-    1: "Deconstruct",
-    2: "Intuition",
-    3: "Formula Selection",
-    4: "Step-by-Step Calculation",
-    5: "Manipulation Guide",
-    6: "Final Answer"
+  const messages = {
+    CONFUSED:  'You seem stuck here. Want me to try a physics/motion analogy instead?',
+    HESITANT:  'Taking a bit longer on this step — shall I break it into smaller pieces?',
+    GUESSING:  'It looks like you might be guessing. Let\'s build up to the formula step by step.',
   };
 
-  let accordion = container.querySelector(".progressive-accordion");
-  if (!accordion) {
-    accordion = document.createElement("div");
-    accordion.className = "progressive-accordion";
-    container.innerHTML = ""; // Clear the loading dots/prose
-    container.appendChild(accordion);
+  const alert = document.createElement('div');
+  alert.className = 'alert-confusion';
+  alert.innerHTML = `
+    <span class="alert-confusion-icon">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+        <path d="M8 2.5L14.5 13.5h-13z"/><path d="M8 6.5v3.5"/><circle cx="8" cy="12" r=".5" fill="currentColor"/>
+      </svg>
+    </span>
+    <span class="alert-confusion-text">${messages[confState] || messages.HESITANT}</span>
+  `;
+  c.appendChild(alert);
+  _scrollToBottom();
+}
+
+// ═══════════════════════════════════════════════════════
+// ALGEBRA TAB
+// ═══════════════════════════════════════════════════════
+function _renderAlgebraTab() {
+  const stepsEl = algebraSteps();
+  const emptyEl = algebraEmpty();
+  if (!stepsEl) return;
+
+  if (!state.activeStages[4] && !state.activeStages[3]) {
+    if (emptyEl) emptyEl.style.display = 'flex';
+    stepsEl.innerHTML = '';
+    return;
   }
+  if (emptyEl) emptyEl.style.display = 'none';
+  // Content rendered via _updateAlgebraTab
+}
 
-  const stageNum = payload.stage;
-  let card = accordion.querySelector(`.stage-card[data-stage="${stageNum}"]`);
-  if (!card) {
-    card = document.createElement("div");
-    card.className = "stage-card";
-    card.setAttribute("data-stage", stageNum);
+function _updateAlgebraTab(answerContent) {
+  const stepsEl = algebraSteps();
+  const emptyEl = algebraEmpty();
+  if (!stepsEl) return;
+  if (emptyEl) emptyEl.style.display = 'none';
 
-    // Find the correct position to insert numerically
-    const cards = Array.from(accordion.querySelectorAll(".stage-card"));
-    const insertBeforeCard = cards.find(c => parseInt(c.getAttribute("data-stage"), 10) > stageNum);
-    if (insertBeforeCard) {
-      accordion.insertBefore(card, insertBeforeCard);
-    } else {
-      accordion.appendChild(card);
-    }
-
-    card.innerHTML = `
-      <div class="stage-header">
-        <span class="stage-title">${STAGE_TITLES[stageNum] || stageType}</span>
-        <span class="stage-badge">Stage ${stageNum}/6</span>
-      </div>
-      <div class="stage-body"></div>
-    `;
-
-    const header = card.querySelector(".stage-header");
-    header.addEventListener("click", () => {
-      const isExpanded = card.classList.contains("is-expanded");
-      accordion.querySelectorAll(".stage-card").forEach(c => c.classList.remove("is-expanded"));
-      if (!isExpanded) {
-        card.classList.add("is-expanded");
-      }
-    });
+  const existing = stepsEl.innerHTML;
+  if (!existing) {
+    stepsEl.innerHTML = `<div class="algebra-step">
+      <div class="algebra-step-label">answer</div>
+      ${_processText(typeof answerContent === 'string' ? answerContent : (answerContent?.answer || JSON.stringify(answerContent)))}
+    </div>`;
   }
+}
 
-  // Set the body content based on the stage type
-  const body = card.querySelector(".stage-body");
-  
-  if (stageType === "stage_error") {
-    card.classList.add("stage-card--skipped");
-    const badge = card.querySelector(".stage-badge");
-    if (badge) {
-      badge.textContent = `Stage ${stageNum}/6 (Skipped)`;
-    }
-    body.innerHTML = `<div class="stage-error-alert">Explanation style skipped: ${escapeHtml(content)}</div>`;
-  } else if (stageType === "deconstruct") {
-    if (typeof content === "object" && content !== null) {
-      const knownsEntries = Object.entries(content.knowns || {});
-      const knownsHtml = knownsEntries.length > 0
-        ? `<div class="deconstruct-section">
-             <strong>Knowns:</strong>
-             <div class="deconstruct-grid">
-               ${knownsEntries.map(([k, v]) => `
-                 <div class="grid-item label">${escapeHtml(k)}</div>
-                 <div class="grid-item value">${escapeHtml(v)}</div>
-               `).join("")}
-             </div>
-           </div>`
-        : "";
+function _clearAlgebra() {
+  const stepsEl = algebraSteps();
+  const emptyEl = algebraEmpty();
+  if (stepsEl) stepsEl.innerHTML = '';
+  if (emptyEl) emptyEl.style.display = 'flex';
+}
 
-      body.innerHTML = `
-        <div class="deconstruct-container">
-          <div class="deconstruct-section">
-            <strong>Problem Type:</strong> ${escapeHtml(content.problemType || "Math Problem")} (${escapeHtml(content.domain || "general")})
-          </div>
-          ${knownsHtml}
-          <div class="deconstruct-section">
-            <strong>Goal:</strong> ${escapeHtml(content.unknown || "unknown")}
-          </div>
-          ${content.commonMistake ? `
-          <div class="deconstruct-section warning">
-            <strong>Common Pitfall:</strong> ${escapeHtml(content.commonMistake)}
-          </div>` : ""}
-        </div>
-      `;
-    } else {
-      body.innerHTML = renderRichTextHtml(content);
-    }
-  } else if (stageType === "intuition") {
-    body.innerHTML = renderRichTextHtml(content);
-  } else if (stageType === "formula") {
-    // Process LaTeX in formula stage
-    if (typeof content === "string") {
-      const parts = content.split("$$");
-      let html = "";
-      for (let i = 0; i < parts.length; i++) {
-        if (i % 2 === 1) {
-          const formula = parts[i].trim();
-          html += `<div class="formula-card-latex">${renderMath(formula, { displayMode: true })}</div>`;
-        } else {
-          html += renderRichTextHtml(parts[i]);
-        }
-      }
-      body.innerHTML = html;
-    } else {
-      body.innerHTML = renderRichTextHtml(content);
-    }
-  } else if (stageType === "steps") {
-    if (Array.isArray(content)) {
-      let stepsHtml = `<div class="steps-list">`;
-      content.forEach((step) => {
-        const stepNum = step.stepNumber || step.step || "?";
-        const action = step.action || "";
-        const expression = step.expression || "";
-        const result = step.result || "";
-        const explanation = step.explanation || "";
-        const sceneAction = step.sceneAction || step.action;
-        const sceneTarget = step.sceneTarget || step.target;
-
-        let exprHtml = expression ? `<div class="step-expression">${renderMath(expression, { displayMode: true })}</div>` : "";
-        let resultHtml = result ? `<div class="step-result"><strong>Result:</strong> ${renderMath(result, { displayMode: false })}</div>` : "";
-
-        let show3dButton = "";
-        if (sceneAction && sceneTarget) {
-          show3dButton = `<button class="tutor-btn highlight-3d-btn" data-target="${escapeHtml(sceneTarget)}" data-action="${escapeHtml(sceneAction)}">Show in 3D</button>`;
-        }
-
-        stepsHtml += `
-          <div class="step-item">
-            <div class="step-item-header">
-              <span class="step-number-badge">${stepNum}</span>
-              <span class="step-action-title">${escapeHtml(action)}</span>
-            </div>
-            <div class="step-item-body">
-              <p class="step-explanation">${escapeHtml(explanation)}</p>
-              ${exprHtml}
-              ${resultHtml}
-              ${show3dButton}
-            </div>
-          </div>
-        `;
-      });
-      stepsHtml += `</div>`;
-      body.innerHTML = stepsHtml;
-
-      // Bind click handlers to Show in 3D buttons
-      body.querySelectorAll(".highlight-3d-btn").forEach(btn => {
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const target = btn.getAttribute("data-target");
-          const action = btn.getAttribute("data-action") || "pulse";
-          if (world && typeof world.highlightObject === "function") {
-            world.highlightObject(target, action);
-          }
-        });
-      });
-    } else {
-      body.innerHTML = renderRichTextHtml(content);
-    }
+// ═══════════════════════════════════════════════════════
+// THINKING INDICATOR
+// ═══════════════════════════════════════════════════════
+function _showThinking(show) {
+  const bar = thinkingBar();
+  if (!bar) return;
+  if (show) {
+    bar.classList.remove('hidden');
   } else {
-    body.innerHTML = renderRichTextHtml(content);
+    bar.classList.add('hidden');
   }
-
-  // Expand this card, collapse all other cards
-  accordion.querySelectorAll(".stage-card").forEach(c => {
-    if (c === card) {
-      c.classList.add("is-expanded");
-    } else {
-      c.classList.remove("is-expanded");
-    }
-  });
-
-  // Ensure scroll is visible
-  container.scrollTop = container.scrollHeight;
 }
 
-export function initTutorController(context) {
-  world = context.world;
-  sceneApi = context.sceneApi;
-
-  if (world.controls) {
-    const debouncedOnControlsChange = debounce(() => {
-      const snap = sceneApi ? sceneApi.snapshot() : { objects: [] };
-      const selectionId = sceneApi ? sceneApi.getSelection() : null;
-      const selected = selectionId ? snap.objects.find(obj => obj.id === selectionId) : null;
-      setContext({
-        currentSceneSpec: snap,
-        visibleObjects: snap.objects,
-        studentAction: "manipulate",
-        selection: selected
-      });
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("sceneContextUpdate", {
-          detail: { action: "manipulate" }
-        }));
-      }
-    }, 250);
-    world.controls.addEventListener("change", debouncedOnControlsChange);
-  }
-
-  cameraDirector = new CameraDirector(world.camera, world.controls);
-  tutorAnnotationManager = new TutorAnnotationManager(world, sceneApi);
-  analyticOverlayManager = new AnalyticOverlayManager(world, sceneApi);
-  electricFieldManager = new ElectricFieldManager(world, sceneApi);
-  calculusSimulationManager = new CalculusSimulationManager(world, sceneApi);
-  calculusHud = new CalculusHud(calculusSimulationManager, async (modality) => {
-    const currentStep = tutorState.getCurrentStep();
-    const stepTitle = currentStep ? `"${currentStep.title}"` : "this step";
-    await handleLearnerInput(`Explain ${stepTitle} in detail. Why did we do this?`, {
-      input_source: "text",
-      user_label: "Why this step? ✨"
-    });
-  });
-  calculusHud.init();
-
-  const stageCanvas = world.renderer?.domElement;
-  if (stageCanvas) {
-    stageCanvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      if (calculusSimulationManager?.isActive) {
-        const raycaster = world.setRayFromClient(event.clientX, event.clientY);
-        if (calculusSimulationManager.handlePointerDown(raycaster)) {
-          event.stopPropagation();
-        }
-      }
-    }, true);
-
-    stageCanvas.addEventListener("pointermove", (event) => {
-      if (calculusSimulationManager?.isActive && calculusSimulationManager.isDragging) {
-        const raycaster = world.setRayFromClient(event.clientX, event.clientY);
-        if (calculusSimulationManager.handlePointerMove(raycaster)) {
-          event.stopPropagation();
-        }
-      }
-    }, true);
-
-    window.addEventListener("pointerup", () => {
-      if (calculusSimulationManager?.isActive) {
-        calculusSimulationManager.handlePointerUp();
-      }
-    }, true);
-  }
-
-  stageWrapEl = document.querySelector(".stage-wrap");
-  if (stageWrapEl) {
-    initEvidencePanel(stageWrapEl);
-    initLabelRenderer(stageWrapEl);
-    initCameraBookmarkPanel();
-  }
-
-  bindDom();
-  bindEvents();
-  initUnfoldDrawer(context);
-  clearTranscript();
-  renderQuestionImageState();
-  setQuestionPanelCollapsed(false, { force: true });
-  renderAssessment(null);
-  renderSceneInfo();
-  updateStageRail();
-  renderAnalyticPanels(null);
-  applyRepresentationDirective({ representationMode: "3d" });
-  updateComposerState();
-  stepIndicator?.classList.add("hidden");
-
-  // Load initial student model
-  import("../ai/client.js").then(({ requestStudentModel }) => {
-    requestStudentModel("default").then((studentModel) => {
-      if (window.updateStudentModelUI) {
-        window.updateStudentModelUI(studentModel);
-      }
-    }).catch(err => console.warn("Failed to load initial student model:", err));
-  });
-
-  sceneApi.onSceneEvent((detail) => {
-    if (detail.type === "objects") {
-      handleSceneMutation(detail);
-    }
-  });
-
-  sceneApi.onSelectionChange(() => {
-    const selected = selectedObjectContext();
-    if (selected) {
-      lastSceneFeedback = `Selected ${selected.label}. Use it to inspect the current idea.`;
-      if (tutorState.learningStage === "predict" && tutorState.predictionState.submitted) {
-        tutorState.setLearningStage("check");
-      }
-    }
-    renderSceneInfo();
-    updateStageRail();
-    syncUnfoldDrawer();
-  });
-
-  questionInput?.addEventListener("input", () => {
-    updateMathPreview(questionMathPreview, questionInput.value);
-    if (questionSection?.classList.contains("is-collapsed")) {
-      setQuestionPanelCollapsed(true, { force: true });
-    }
-  });
-  chatInput?.addEventListener("input", () => {
-    chatInput.classList.remove("input--awaiting");
-    resizeChatComposer();
-    updateMathPreview(chatMathPreview, chatInput.value);
-  });
-
-  awaitingLearnerResponse = true;
-  updateComposerState();
-  resizeChatComposer();
-  updateMathPreview(questionMathPreview, questionInput?.value || "");
-  updateMathPreview(chatMathPreview, chatInput?.value || "");
+// ═══════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════
+function _clearQuickActions() {
+  const w = qaWrap();
+  if (w) w.innerHTML = '';
 }
 
+function _scrollToBottom() {
+  const c = chat();
+  if (c) requestAnimationFrame(() => { c.scrollTop = c.scrollHeight; });
+}
+
+function _escHtml(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _processText(text) {
+  if (typeof text !== 'string') return '';
+  // Escape first
+  let html = _escHtml(text);
+  // Inline math: f'(x) = 0 style
+  html = html.replace(/`([^`]+)`/g, '<span class="inline-math">$1</span>');
+  // Bold **text**
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Basic LaTeX inline $...$
+  html = html.replace(/\$([^$]+)\$/g, '<span class="inline-math">$1</span>');
+  // Newlines
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+
+// Export for legacy planService.js usage
+export { setPlan as default };
+export { sendTutorMessage as sendMessage };
+
+// Demo Mode / Legacy exports
 export function primeTutorInputs({ text = "", imageFile = null } = {}) {
-  if (questionInput) {
-    questionInput.value = String(text || "");
-    updateMathPreview(questionMathPreview, questionInput.value);
+  const chatInput = document.getElementById('chatInput');
+  if (chatInput) {
+    chatInput.value = text;
   }
   if (imageFile) {
-    setQuestionImageFile(imageFile);
+    state.questionImagePreviewUrl = URL.createObjectURL(imageFile);
   }
-}
-
-export function applyGeneratedPlan(scenePlan) {
-  if (!scenePlan) return;
-  setPlan(scenePlan);
-  setQuestionStatus("", "hidden");
 }
 
 export function getQuestionImagePreviewUrl() {
-  return questionImagePreviewUrl;
+  return state.questionImagePreviewUrl;
+}
+
+export function applyGeneratedPlan(plan) {
+  setPlan(plan);
 }
 
 export async function startTutorTurn(text = "Let's start.") {
-  await handleLearnerInput(text, { input_source: "text" });
+  await sendTutorMessage(text);
 }
 
 export function updateTutorLabels() {
-  if (world) {
-    renderLabels(world.scene, world.camera);
-  }
-  electricFieldManager?.update();
-  calculusSimulationManager?.update();
-  syncUnfoldDrawer();
+  // Dummy to prevent import/runtime errors
 }
+
