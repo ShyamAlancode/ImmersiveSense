@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════════════════
 
 import { getContext, setStudentAction, resetContext } from '../state/sceneContextStore.js';
-import { socraticCoachEvents, dispatchCorrectAnswer, dispatchForceCalculation } from '../core/socraticCoachEvents.js';
+import { socraticCoachEvents, dispatchCorrectAnswer, dispatchForceCalculation, dispatchConfusion } from '../core/socraticCoachEvents.js';
 
 // ── State ──────────────────────────────────────────────
 const state = {
@@ -661,7 +661,6 @@ export async function sendTutorMessage(message, extraPayload = {}) {
 
           if (currentEventType === 'confusion') {
             if (parsed.state) {
-              const { dispatchConfusion } = await import('../core/socraticCoachEvents.js');
               dispatchConfusion(parsed.state);
             }
             return;
