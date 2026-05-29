@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { applyWorldPatch } from "../scene/worldPatch.js";
 
 export function createWorld(container) {
   const OPAQUE_OPACITY_THRESHOLD = 0.995;
@@ -29,11 +28,6 @@ export function createWorld(container) {
   document.querySelector('.derivative-card')?.remove();
 
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.addEventListener('change', () => {
-    if (typeof world !== 'undefined' && typeof world.notifyOrbitChange === 'function') {
-      world.notifyOrbitChange();
-    }
-  });
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.enableRotate = true;
@@ -505,7 +499,7 @@ export function createWorld(container) {
   resize();
   animate();
 
-  const world = {
+  return {
     scene,
     camera,
     controls,
@@ -528,8 +522,4 @@ export function createWorld(container) {
     resetView,
     highlightObject,
   };
-
-  applyWorldPatch(world);
-
-  return world;
 }

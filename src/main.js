@@ -4,8 +4,6 @@ import { initDemoMode } from "./ui/demoMode.js";
 import { initFloatingChat } from "./ui/chatController.js";
 
 const appContext = bootstrapApp();
-const { world } = appContext;
-window.world = world;
 const isDemoMode = new URLSearchParams(window.location.search).get("demo") === "true";
 
 // Initialize tutor system
