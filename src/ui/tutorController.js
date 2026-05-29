@@ -17,6 +17,7 @@ const state = {
   activeStages: {},         // stageNum → DOM card element
   thinkingTimer: null,
   hasExplored: false,
+  questionImagePreviewUrl: null,
 };
 
 // ── DOM refs ───────────────────────────────────────────
@@ -876,3 +877,30 @@ function _processText(text) {
 // Export for legacy planService.js usage
 export { setPlan as default };
 export { sendTutorMessage as sendMessage };
+
+// Demo Mode / Legacy exports
+export function primeTutorInputs({ text = "", imageFile = null } = {}) {
+  const chatInput = document.getElementById('chatInput');
+  if (chatInput) {
+    chatInput.value = text;
+  }
+  if (imageFile) {
+    state.questionImagePreviewUrl = URL.createObjectURL(imageFile);
+  }
+}
+
+export function getQuestionImagePreviewUrl() {
+  return state.questionImagePreviewUrl;
+}
+
+export function applyGeneratedPlan(plan) {
+  setPlan(plan);
+}
+
+export async function startTutorTurn(text = "Let's start.") {
+  await sendTutorMessage(text);
+}
+
+export function updateTutorLabels() {
+  // Dummy to prevent import/runtime errors
+}
